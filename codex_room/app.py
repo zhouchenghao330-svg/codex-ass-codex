@@ -28,6 +28,7 @@ from .storage import RoomStore
 from .transcript import Entry, ReplyBlock, format_duration, render_reply
 from .colors import COLOR_CHOICES, choose_color, member_colors, normalize_color
 from .member_config import parse_add, resolve_directory
+from .completion import Completion, CompletionEngine
 
 
 MUTED = "#788294"
@@ -298,7 +299,8 @@ class Help(ModalScreen[None]):
                 "[b #a9b6ff]/help[/]               打开此帮助\n\n"
                 "[b]Ctrl+1 / 2 / 3[/] 切换成员   [b]Ctrl+L[/] 全部 / 单人视图\n"
                 "[b]Ctrl+N[/] 添加成员           [b]@[/] 打开成员选择\n"
-                "[b]↑ / ↓[/] 选择成员           [b]Tab / Enter[/] 确认\n"
+                "[b]↑ / ↓[/] 选择候选           [b]Tab / Enter[/] 补全\n"
+                "[b]/命令、成员、模型、权限、目录和颜色[/] 均支持补全\n"
                 "[b]Ctrl+B[/] 展开 / 收起成员\n"
                 "[b]Ctrl+T[/] 展开 / 收起工具调用详情\n"
                 "[b]Ctrl+Q[/] 退出               [b]Esc[/] 回到输入框\n\n"
@@ -316,44 +318,58 @@ class Help(ModalScreen[None]):
         self.dismiss(None)
 
 
-class MentionList(OptionList, can_focus=False):
+class CompletionList(OptionList, can_focus=False):
     """A mouse-selectable popup which leaves keyboard focus in the composer."""
 
 
 class ComposerInput(Input):
-    """Navigate mentions while retaining normal input behavior outside the popup."""
+    """Complete the token at the cursor without dispatching a message."""
 
     async def _on_key(self, event: events.Key) -> None:
         app = self.app
-        if event.key in {"up", "down", "tab", "escape"}:
-            app.refresh_mentions()
-        if app.mention_open and event.key in {"up", "down", "tab", "escape"}:
-            menu = app.room_screen.query_one("#mention-list", MentionList)
-            if event.key == "up":
+        if event.key in {"up", "down", "tab", "shift+tab", "escape"}:
+            app.refresh_completions(explicit=event.key != "escape")
+        if app.completion_open and event.key in {"up", "down", "tab", "shift+tab", "escape"}:
+            menu = app.room_screen.query_one("#completion-list", CompletionList)
+            if event.key in {"up", "shift+tab"}:
                 menu.action_cursor_up()
             elif event.key == "down":
                 menu.action_cursor_down()
             elif event.key == "tab":
-                app.accept_mention()
+                app.accept_completion()
             else:
-                app.close_mentions()
+                app.close_completions()
                 app.refresh_recipient()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key in {"tab", "shift+tab"}:
             event.prevent_default()
             event.stop()
             return
         await super()._on_key(event)
 
     async def action_submit(self) -> None:
-        self.app.refresh_mentions()
-        if self.app.mention_open:
-            self.app.accept_mention()
+        self.app.refresh_completions()
+        if self.app.completion_open:
+            if self.app.completion.candidates:
+                self.app.accept_completion()
+                return
+            if self.app.completion.kind in {"mention", "command"}:
+                return
+            await super().action_submit()
         else:
             await super().action_submit()
 
     def _on_blur(self, event: events.Blur) -> None:
         super()._on_blur(event)
         if hasattr(self.app, "room_screen"):
-            self.app.close_mentions()
+            self.app.close_completions()
+
+    def _watch_selection(self, selection) -> None:
+        super()._watch_selection(selection)
+        if self.is_mounted and hasattr(self.app, "room_screen"):
+            self.call_after_refresh(self.app.refresh_completions)
 
 
 class CodexRoom(App):
@@ -387,10 +403,12 @@ class CodexRoom(App):
         self.show_all = True
         self.sidebar_visible = False
         self.tools_expanded = False
-        self.mention_open = False
-        self.mention_matches: list[str] = []
-        self.mention_signature: tuple = ()
-        self.dismissed_mention: str | None = None
+        self.completion_open = False
+        self.completion_engine = CompletionEngine()
+        self.completion: Completion | None = None
+        self.completion_matches: list[str] = []
+        self.completion_signature: tuple = ()
+        self.dismissed_completion: tuple[str, int] | None = None
         self.entries: list[Entry] = []
         self.cards: dict[int, MessageCard] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -444,7 +462,7 @@ class CodexRoom(App):
             with Vertical(id="main"):
                 with VerticalScroll(id="timeline"):
                     yield Static("输入 /add 名字 或按 Ctrl+N 创建 Codex", id="empty-room", classes="muted")
-                yield MentionList(id="mention-list")
+                yield CompletionList(id="completion-list")
                 with Horizontal(id="composer"):
                     yield Static("›", id="prompt")
                     yield ComposerInput(placeholder="说点什么，或 @名字…", id="message-input", select_on_focus=False)
@@ -524,7 +542,7 @@ class CodexRoom(App):
             self.set_timer(0.05, self.reveal_selected)
 
     def reveal_selected(self) -> None:
-        if not self.sidebar_visible or self.selected not in self.agents:
+        if not self.is_running or self.shutting_down or not self.sidebar_visible or self.selected not in self.agents:
             return
         member = self.room_screen.query_one(f"#member-{self.selected}")
         self.room_screen.query_one("#members", VerticalScroll).scroll_to_widget(
@@ -532,7 +550,9 @@ class CodexRoom(App):
         )
 
     def scroll_bottom(self) -> None:
-        self.room_screen.query_one("#timeline", VerticalScroll).scroll_end(animate=False)
+        if not self.is_running or self.shutting_down:
+            return
+        self.room_screen.query_one("#timeline", VerticalScroll).scroll_end(animate=False, immediate=True)
 
     def tick(self) -> None:
         if not self.is_running or self.shutting_down:
@@ -542,71 +562,97 @@ class CodexRoom(App):
             card = self.cards.get(id(answer))
             if card and card.display:
                 card.refresh_working(self.frame)
-        if self.mention_open:
-            self.refresh_mentions()
+        if self.completion_open:
+            self.refresh_completions()
         self.refresh_chrome()
 
-    def close_mentions(self) -> None:
-        self.mention_open = False
-        self.dismissed_mention = self.room_screen.query_one("#message-input", Input).value
-        self.room_screen.query_one("#mention-list", MentionList).display = False
-
-    def refresh_mentions(self) -> None:
+    def close_completions(self) -> None:
+        self.completion_open = False
         composer = self.room_screen.query_one("#message-input", Input)
-        menu = self.room_screen.query_one("#mention-list", MentionList)
-        match = re.fullmatch(r"@([^\s]*)", composer.value)
-        if not match or not composer.has_focus or composer.value == self.dismissed_mention:
-            menu.display = False
-            self.mention_open = False
-            if not match:
-                self.dismissed_mention = None
+        self.dismissed_completion = (composer.value, composer.cursor_position)
+        self.room_screen.query_one("#completion-list", CompletionList).display = False
+
+    def refresh_completions(self, *, explicit: bool = False) -> None:
+        if not self.is_running or not self.is_mounted or self.shutting_down:
             return
-        query = match.group(1).casefold()
-        matches = [
-            name for name, agent in self.agents.items()
-            if name.casefold().startswith(query) or agent.label.casefold().startswith(query)
-        ]
-        signature = tuple((name, self.agents[name].busy, len(self.agents[name].queue)) for name in matches)
-        if signature != self.mention_signature or not menu.option_count:
-            old_name = None
-            if menu.highlighted is not None and menu.highlighted < len(self.mention_matches):
-                old_name = self.mention_matches[menu.highlighted]
+        composer = self.room_screen.query_one("#message-input", Input)
+        menu = self.room_screen.query_one("#completion-list", CompletionList)
+        position = (composer.value, composer.cursor_position)
+        if not composer.has_focus or (position == self.dismissed_completion and not explicit):
+            menu.display = False
+            self.completion_open = False
+            return
+        if position != self.dismissed_completion or explicit:
+            self.dismissed_completion = None
+        context = self.completion_engine.complete(
+            *position, self.agents, self.cwd, self.client.models if self.client else [], explicit=explicit)
+        if context is None:
+            menu.display = False
+            self.completion_open = False
+            self.completion = None
+            return
+        status = tuple((item.member, self.agents[item.member].busy, len(self.agents[item.member].queue))
+                       for item in context.candidates if item.member)
+        signature = (context.kind, context.start, context.end, context.candidates, status)
+        if signature != self.completion_signature or not menu.option_count:
+            old_value = None
+            if self.completion and menu.highlighted is not None and menu.highlighted < len(self.completion.candidates):
+                old_value = self.completion.candidates[menu.highlighted].value
             options = []
-            for name in matches:
-                agent = self.agents[name]
-                row = Text(f"@{name:<12}", style=agent.accent)
-                if agent.label != name:
-                    row.append(f"  {agent.label}", style="#d1d4cd")
-                row.append("  工作中" if agent.busy else "  空闲", style="#e8b878" if agent.busy else MUTED)
-                if agent.queue:
-                    row.append(f" +{len(agent.queue)}", style="#e8b878")
-                options.append(Option(row, id=name))
-            menu.set_options(options or [Option("没有匹配的 Codex" if self.agents else "先用 /add 名字 创建 Codex", disabled=True)])
-            menu.highlighted = matches.index(old_name) if old_name in matches else (0 if matches else None)
-            self.mention_signature = signature
-        self.mention_matches = matches
-        height = min(8, max(1, len(matches)) + 2)
+            for index, item in enumerate(context.candidates):
+                row = Text(no_wrap=True, overflow="ellipsis")
+                if item.member:
+                    agent = self.agents[item.member]
+                    row.append(f"{item.value:<16}", style=agent.accent)
+                    row.append("  工作中" if agent.busy else "  空闲", style="#e8b878" if agent.busy else MUTED)
+                    if agent.queue:
+                        row.append(f" +{len(agent.queue)}", style="#e8b878")
+                    row.append(f" · {Path(agent.cwd).name}", style=MUTED)
+                else:
+                    row.append(f"{item.value:<20}", style="#a9b6ff")
+                    row.append(f"  {item.detail}", style=MUTED)
+                options.append(Option(row, id=str(index)))
+            empty = {"mention": "没有匹配的 Codex · /add 名字 创建", "member": "没有匹配的 Codex",
+                     "command": "没有匹配的命令", "directory": "没有匹配的目录 · 可继续输入路径",
+                     "model": "没有匹配的模型 · 可直接输入模型名"}.get(context.kind, "没有匹配的选项")
+            menu.set_options(options or [Option(empty, disabled=True)])
+            values = [item.value for item in context.candidates]
+            menu.highlighted = values.index(old_value) if old_value in values else (0 if values else None)
+            self.completion_signature = signature
+        self.completion = context
+        self.completion_matches = [item.member or item.value for item in context.candidates]
+        height = min(8, max(1, len(context.candidates)) + 2)
         menu.styles.height = height
         menu.styles.offset = (0, -height)
         menu.display = True
-        self.mention_open = True
+        self.completion_open = True
 
-    def accept_mention(self, name: str | None = None) -> None:
-        menu = self.room_screen.query_one("#mention-list", MentionList)
-        if name is None:
-            if menu.highlighted is None or not self.mention_matches:
-                return
-            name = self.mention_matches[menu.highlighted]
+    def accept_completion(self, index: int | None = None) -> None:
+        menu = self.room_screen.query_one("#completion-list", CompletionList)
+        context = self.completion
+        index = menu.highlighted if index is None else index
+        if context is None or index is None or index >= len(context.candidates):
+            return
+        item = context.candidates[index]
         composer = self.room_screen.query_one("#message-input", Input)
-        self.close_mentions()
-        composer.value = f"@{name} "
-        composer.cursor_position = len(composer.value)
-        self.select(name)
+        value, cursor = context.apply(composer.value, item)
+        self.close_completions()
+        composer.value = value
+        composer.cursor_position = cursor
+        if item.directory or (context.kind in {"color", "directory"} and item.value != "--color"):
+            # Enter can use this value; another Tab explores the next argument.
+            self.dismissed_completion = (value, cursor)
+        if context.kind == "mention":
+            self.select(item.member)
+        else:
+            composer.focus()
+        self.refresh_completions()
+        self.refresh_recipient()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option_list.id == "mention-list" and event.option_id:
+        if event.option_list.id == "completion-list" and event.option_id is not None:
             event.stop()
-            self.accept_mention(event.option_id)
+            self.accept_completion(int(event.option_id))
 
     def refresh_chrome(self) -> None:
         if not self.is_running or not self.is_mounted or self.shutting_down:
@@ -641,10 +687,10 @@ class CodexRoom(App):
                 recipient.append(f" · {busy} 人工作中", style="#e8b878")
         else:
             recipient.append(f"未找到 @{name} · 可以先 /add {name}" if self.agents else "暂无 Codex · /add 名字 或 Ctrl+N 创建", style=MUTED)
-        if value.startswith("/"):
+        if self.completion_open:
+            recipient = Text("↑↓ 选择 · Tab / Enter 补全 · Esc 关闭", style=MUTED)
+        elif value.startswith("/"):
             recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /help", style=MUTED)
-        elif self.mention_open:
-            recipient = Text("↑↓ 选择 · Tab / Enter 确认 · Esc 关闭", style=MUTED)
         self.room_screen.query_one("#recipient", Static).update(recipient)
         self.room_screen.query_one("#message-input", Input).placeholder = f"给 @{self.selected} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
 
@@ -787,7 +833,7 @@ class CodexRoom(App):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "message-input":
-            self.refresh_mentions()
+            self.refresh_completions()
             self.refresh_recipient()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:

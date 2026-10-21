@@ -53,38 +53,59 @@ async def preview() -> None:
         entry_count = len(app.entries)
         timeline_region = app.query_one("#timeline").region
         composer.value = "@"
+        composer.cursor_position = len(composer.value)
         await pilot.pause()
-        assert app.mention_open and app.mention_matches == ["exp", "ops", "review"]
+        assert app.completion_open and app.completion_matches == ["exp", "ops", "review"]
         assert app.query_one("#timeline").region == timeline_region
-        assert app.query_one("#mention-list").region.bottom <= app.query_one("#composer").region.y
+        assert app.query_one("#completion-list").region.bottom <= app.query_one("#composer").region.y
         await pilot.press("down")
-        assert app.query_one("#mention-list").highlighted == 1
+        assert app.query_one("#completion-list").highlighted == 1
         capture(app, "mentions.svg", output)
         await pilot.press("enter")
-        assert composer.value == "@ops " and not app.mention_open
+        assert composer.value == "@ops " and not app.completion_open
         assert composer.has_focus and len(app.entries) == entry_count
 
         composer.value = "@REV"
+        composer.cursor_position = len(composer.value)
         await pilot.pause()
-        assert app.mention_matches == ["review"]
+        assert app.completion_matches == ["review"]
         await pilot.press("tab")
         assert composer.value == "@review "
         composer.value = "@"
+        composer.cursor_position = len(composer.value)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause(0.2)
-        assert not app.mention_open and composer.value == "@"
+        assert not app.completion_open and composer.value == "@"
         composer.value = "@zzzz"
+        composer.cursor_position = len(composer.value)
         await pilot.pause()
-        assert app.mention_open and app.mention_matches == []
+        assert app.completion_open and app.completion_matches == []
         await pilot.press("enter")
         assert len(app.entries) == entry_count and composer.value == "@zzzz"
         composer.value = "@o"
+        composer.cursor_position = len(composer.value)
         await pilot.pause()
-        await pilot.click("#mention-list", offset=(3, 1))
-        assert composer.value == "@ops " and not app.mention_open
+        await pilot.click("#completion-list", offset=(3, 1))
+        assert composer.value == "@ops " and not app.completion_open
         assert composer.has_focus and len(app.entries) == entry_count
         composer.value = ""
+        composer.cursor_position = len(composer.value)
+
+        composer.value = "/mem"
+        composer.cursor_position = len(composer.value)
+        await pilot.pause()
+        capture(app, "command-completion.svg", output)
+        await pilot.press("tab")
+        assert composer.value == "/members " and not app.sidebar_visible
+        composer.value = "/focus "
+        composer.cursor_position = len(composer.value)
+        await pilot.pause()
+        capture(app, "argument-completion.svg", output)
+        await pilot.press("down", "tab")
+        assert composer.value == "/focus ops "
+        composer.value = ""
+        composer.cursor_position = 0
 
         # Use the actual composer and sidebar rather than bypassing their events.
         await pilot.press("ctrl+b")
@@ -100,14 +121,17 @@ async def preview() -> None:
         assert not app.query_one("#sidebar").display
         composer = app.query_one("#message-input", Input)
         composer.value = "检查 GPU 和实验进程"
+        composer.cursor_position = len(composer.value)
         await pilot.press("enter")
         assert app.agents["ops"].busy
         assert not any(entry.body == "检查 GPU 和实验进程" for entry in app.agents["exp"].history)
 
         composer.value = "@exp 准备消融实验"
+        composer.cursor_position = len(composer.value)
         await pilot.press("enter")
         assert app.agents["exp"].busy and app.agents["ops"].busy
         composer.value = "@exp 完成后再检查日志"
+        composer.cursor_position = len(composer.value)
         await pilot.press("enter")
         queued = app.agents["exp"].queue[0]
         assert queued.state == "queued"
@@ -115,6 +139,7 @@ async def preview() -> None:
         capture(app, "parallel.svg", output)
 
         composer.value = "/stop exp"
+        composer.cursor_position = len(composer.value)
         await pilot.press("enter")
         assert not app.agents["exp"].busy
         assert not app.agents["exp"].queue
@@ -122,12 +147,15 @@ async def preview() -> None:
 
         # An invalid recipient must preserve the draft, without dispatching it.
         composer.value = "@missing 这条消息不能丢失"
+        composer.cursor_position = len(composer.value)
         await pilot.press("enter")
         assert composer.value == "@missing 这条消息不能丢失"
         composer.value = "@rev"
+        composer.cursor_position = len(composer.value)
         await pilot.press("tab")
         assert composer.value == "@review "
         composer.value = ""
+        composer.cursor_position = len(composer.value)
 
         await pilot.press("ctrl+n")
         await pilot.pause()
@@ -138,11 +166,13 @@ async def preview() -> None:
         assert app.selected == "writer"
         assert app.agents["writer"].history == []
         composer.value = "@wri"
+        composer.cursor_position = len(composer.value)
         await pilot.pause()
-        assert app.mention_matches == ["writer"]
+        assert app.completion_matches == ["writer"]
         await pilot.press("enter")
         assert composer.value == "@writer "
         composer.value = ""
+        composer.cursor_position = len(composer.value)
 
         await pilot.press("ctrl+l")
         assert not app.show_all
@@ -156,6 +186,7 @@ async def preview() -> None:
 
         # Stop + restart must not resurrect the cancelled queue.
         composer.value = "@exp 重新看一下结果"
+        composer.cursor_position = len(composer.value)
         await pilot.press("enter")
         await asyncio.gather(*list(app.tasks.values()))
         assert not any(agent.busy for agent in app.agents.values())

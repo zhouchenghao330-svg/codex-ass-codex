@@ -126,33 +126,40 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 composer = app.query_one('#message-input', Input)
                 count = len(app.entries)
                 composer.value = '@b'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
                 self.assertEqual(app.selected, 'b')
                 self.assertEqual(composer.value, '@b ')
                 self.assertEqual(len(app.entries), count)
                 self.assertEqual(app.agents['b'].history, [])
                 composer.value = '@a slow'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
                 self.assertEqual(app.selected, 'a')
                 self.assertIn('@a', composer.placeholder)
                 composer.value = 'follow up without a mention'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
                 self.assertEqual(app.agents['a'].queue[-1].body, 'follow up without a mention')
                 self.assertEqual(app.agents['b'].history, [])
                 composer.value = '@missing preserve this draft'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
                 self.assertEqual(app.selected, 'a')
                 self.assertEqual(composer.value, '@missing preserve this draft')
                 app.show_all = False
                 app.apply_filter()
                 composer.value = '@b'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('tab')
                 self.assertEqual(app.selected, 'b')
                 self.assertFalse(app.cards[id(app.agents['a'].history[-1])].display)
                 composer.value = '@b hello'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
                 await asyncio.wait_for(app.tasks['b'], 5)
                 composer.value = 'continue here'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
                 await asyncio.wait_for(app.tasks['b'], 5)
                 self.assertIn('continue here', app.agents['b'].history[-1].body)
@@ -203,6 +210,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("检查项目结构", app.agents["b"].phase)
                 composer = app.query_one("#message-input", Input)
                 composer.value = "a pending draft"
+                composer.cursor_position = len(composer.value)
                 composer.cursor_position = 3
                 await pilot.pause(0.2)
                 self.assertEqual(composer.value, "a pending draft")
@@ -314,6 +322,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("Skill instructions", collapsed)
                 composer = app.query_one("#message-input", Input)
                 composer.value = "draft @test"
+                composer.cursor_position = len(composer.value)
                 composer.cursor_position = 5
                 await pilot.pause()
                 collapsed_height = card.size.height

@@ -22,10 +22,10 @@ Screen {
 .working-status { height: 1; color: #788294; }
 .work-summary { height: 1; margin-top: 1; color: #788294; }
 
-#mention-list {
+#completion-list {
     display: none;
     overlay: screen;
-    width: 44;
+    width: 72;
     max-width: 100%;
     height: 5;
     padding: 0 1;
@@ -33,12 +33,12 @@ Screen {
     background: #242c21;
     scrollbar-size: 1 1;
 }
-#mention-list > .option-list--option-highlighted {
+#completion-list > .option-list--option-highlighted {
     background: #3c4b32;
     color: #edf1e7;
     text-style: bold;
 }
-#mention-list > .option-list--option-hover { background: #343f2c; }
+#completion-list > .option-list--option-hover { background: #343f2c; }
 
 #composer {
     height: 3;

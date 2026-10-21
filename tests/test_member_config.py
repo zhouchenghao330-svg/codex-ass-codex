@@ -73,6 +73,7 @@ class MemberDirectoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.agents['a'].effort, 'low')
                 composer = app.query_one('#message-input', Input)
                 composer.value = '/add missing ./not-here'
+                composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
                 self.assertEqual(composer.value, '/add missing ./not-here')
                 self.assertNotIn('missing', app.agents)
