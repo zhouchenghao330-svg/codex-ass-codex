@@ -1,0 +1,190 @@
+"""Exercise real TUI interactions and capture representative terminal screens."""
+from __future__ import annotations
+
+import asyncio
+import os
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+os.environ.pop("NO_COLOR", None)
+os.environ["COLORTERM"] = "truecolor"
+os.environ["TERM"] = "xterm-256color"
+
+from rich.cells import cell_len
+from textual.widgets import Input
+
+from codex_room.app import CodexRoom
+
+
+def capture(app: CodexRoom, name: str, output: Path) -> None:
+    """Correct Rich 15's SVG textLength for wide glyphs; terminal rendering is unaffected."""
+    svg = app.export_screenshot()
+    ET.register_namespace("", "http://www.w3.org/2000/svg")
+    root = ET.fromstring(svg)
+    for text in root.iter("{http://www.w3.org/2000/svg}text"):
+        content = "".join(text.itertext())
+        if "textLength" in text.attrib and content:
+            cells = cell_len(content)
+            cell_width = float(text.attrib["textLength"]) / len(content)
+            text.set("textLength", str(cells * cell_width))
+            text.set("lengthAdjust", "spacingAndGlyphs")
+    (output / name).write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
+
+
+async def preview() -> None:
+    output = Path("artifacts")
+    output.mkdir(exist_ok=True)
+    app = CodexRoom(demo=True, speed=1.5)
+    async with app.run_test(size=(132, 43)) as pilot:
+        await pilot.pause()
+        assert not app.query_one("#sidebar").display
+        assert app.query_one("#timeline").region.y == 1
+        assert app.query_one("#composer").region.height == 3
+        capture(app, "preview.svg", output)
+
+        # These members are explicit test fixtures, never startup defaults.
+        await app.create_member("exp")
+        await app.create_member("ops")
+        await app.create_member("review")
+        app.select("exp")
+
+        # Picking a mention must never submit a message or resize the timeline.
+        composer = app.query_one("#message-input", Input)
+        entry_count = len(app.entries)
+        timeline_region = app.query_one("#timeline").region
+        composer.value = "@"
+        await pilot.pause()
+        assert app.mention_open and app.mention_matches == ["exp", "ops", "review"]
+        assert app.query_one("#timeline").region == timeline_region
+        assert app.query_one("#mention-list").region.bottom <= app.query_one("#composer").region.y
+        await pilot.press("down")
+        assert app.query_one("#mention-list").highlighted == 1
+        capture(app, "mentions.svg", output)
+        await pilot.press("enter")
+        assert composer.value == "@ops " and not app.mention_open
+        assert composer.has_focus and len(app.entries) == entry_count
+
+        composer.value = "@REV"
+        await pilot.pause()
+        assert app.mention_matches == ["review"]
+        await pilot.press("tab")
+        assert composer.value == "@review "
+        composer.value = "@"
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        assert not app.mention_open and composer.value == "@"
+        composer.value = "@zzzz"
+        await pilot.pause()
+        assert app.mention_open and app.mention_matches == []
+        await pilot.press("enter")
+        assert len(app.entries) == entry_count and composer.value == "@zzzz"
+        composer.value = "@o"
+        await pilot.pause()
+        await pilot.click("#mention-list", offset=(3, 1))
+        assert composer.value == "@ops " and not app.mention_open
+        assert composer.has_focus and len(app.entries) == entry_count
+        composer.value = ""
+
+        # Use the actual composer and sidebar rather than bypassing their events.
+        await pilot.press("ctrl+b")
+        await pilot.pause(0.1)
+        assert app.query_one("#sidebar").display
+        capture(app, "sidebar.svg", output)
+        await pilot.click("#member-ops")
+        assert app.selected == "ops"
+        assert not app.show_all
+        await pilot.click("#all-messages")
+        assert app.show_all
+        await pilot.click("#toggle-sidebar")
+        assert not app.query_one("#sidebar").display
+        composer = app.query_one("#message-input", Input)
+        composer.value = "检查 GPU 和实验进程"
+        await pilot.press("enter")
+        assert app.agents["ops"].busy
+        assert not any(entry.body == "检查 GPU 和实验进程" for entry in app.agents["exp"].history)
+
+        composer.value = "@exp 准备消融实验"
+        await pilot.press("enter")
+        assert app.agents["exp"].busy and app.agents["ops"].busy
+        composer.value = "@exp 完成后再检查日志"
+        await pilot.press("enter")
+        queued = app.agents["exp"].queue[0]
+        assert queued.state == "queued"
+        await pilot.pause(0.08)
+        capture(app, "parallel.svg", output)
+
+        composer.value = "/stop exp"
+        await pilot.press("enter")
+        assert not app.agents["exp"].busy
+        assert not app.agents["exp"].queue
+        assert queued.state == "stopped"
+
+        # An invalid recipient must preserve the draft, without dispatching it.
+        composer.value = "@missing 这条消息不能丢失"
+        await pilot.press("enter")
+        assert composer.value == "@missing 这条消息不能丢失"
+        composer.value = "@rev"
+        await pilot.press("tab")
+        assert composer.value == "@review "
+        composer.value = ""
+
+        await pilot.press("ctrl+n")
+        await pilot.pause()
+        app.screen.query_one("#new-name", Input).value = "writer"
+        capture(app, "add-member.svg", output)
+        await pilot.click("#confirm-add")
+        await pilot.pause()
+        assert app.selected == "writer"
+        assert app.agents["writer"].history == []
+        composer.value = "@wri"
+        await pilot.pause()
+        assert app.mention_matches == ["writer"]
+        await pilot.press("enter")
+        assert composer.value == "@writer "
+        composer.value = ""
+
+        await pilot.press("ctrl+l")
+        assert not app.show_all
+        for entry in app.entries:
+            if entry.sender in {"exp", "ops"}:
+                assert not app.cards[id(entry)].display
+
+        await pilot.press("f1")
+        await pilot.pause()
+        await pilot.press("escape")
+
+        # Stop + restart must not resurrect the cancelled queue.
+        composer.value = "@exp 重新看一下结果"
+        await pilot.press("enter")
+        await asyncio.gather(*list(app.tasks.values()))
+        assert not any(agent.busy for agent in app.agents.values())
+        assert not any(entry.state == "working" for entry in app.entries)
+        assert not any(entry.sender == "exp" and "完成后再检查日志" in entry.body for entry in app.entries)
+        await pilot.pause()
+        last_reply = next(entry for entry in reversed(app.entries) if entry.sender == "exp")
+        assert app.cards[id(last_reply)].work_summary.display
+        capture(app, "completed.svg", output)
+
+        await pilot.resize_terminal(86, 26)
+        await pilot.pause(0.1)
+        app.scroll_bottom()
+        await pilot.pause()
+        assert app.query_one("#message-input").region.bottom <= 26
+        assert app.query_one("#message-input").region.width > 75
+        capture(app, "compact.svg", output)
+        await pilot.press("ctrl+b")
+        await pilot.pause(0.1)
+        app.scroll_bottom()
+        await pilot.pause()
+        member = app.query_one("#member-writer")
+        assert app.query_one("#members").can_view_entire(member)
+        capture(app, "compact-sidebar.svg", output)
+        await pilot.click("#close-sidebar")
+        assert not app.sidebar_visible
+        print("PASS: routing, parallel replies, queue, stop/restart, mention popup/keys/mouse/filter/no-send, add-member, filters, help, resize, sidebar")
+        print(f"Screenshots: {output.resolve()}")
+
+
+if __name__ == "__main__":
+    asyncio.run(preview())
