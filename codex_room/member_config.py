@@ -1,11 +1,11 @@
 """Parse member creation options without changing the process working directory."""
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
 from .colors import normalize_color
+from .platform_support import split_arguments
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ def resolve_directory(value: str | Path | None, base: Path, *, validate: bool = 
 
 def parse_add(value: str, base: Path) -> AddOptions | None:
     try:
-        tokens = shlex.split(value)[1:]
+        tokens = split_arguments(value)[1:]
     except ValueError as exc:
         raise ValueError("路径的引号没有闭合。带空格的路径请用引号括起来。") from exc
     if not tokens:

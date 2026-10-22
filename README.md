@@ -14,6 +14,8 @@ uv run codex-room
 
 也支持 `uv run codex_room` 和 `uv run python -m codex_room`。用 `--cwd /path/to/project` 指定 Codex 的工作目录。
 
+Windows 用户拿到 ZIP 后先完整解压，可双击 `start.bat`，也可在解压目录的 PowerShell 中运行同一命令。需要本机已安装 uv 和已登录的 Codex CLI；具体步骤见 [Windows ZIP 使用说明](WINDOWS.md)。文件锁支持 Windows/macOS/Linux，Windows 使用 Textual 的原生驱动，并处理 Codex 的标准 npm `.cmd` 启动器。
+
 默认真实调用模型并允许执行任务。纯界面演示使用 `uv run codex-room --demo`，演示模式不连接 Codex。
 
 默认只有消息、三行输入区和一行状态，成员侧栏默认收起。支持鼠标滚动消息和中文输入。

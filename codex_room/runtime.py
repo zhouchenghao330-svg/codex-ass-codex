@@ -8,6 +8,8 @@ from collections import deque
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from .platform_support import codex_command
+
 
 class CodexError(RuntimeError):
     def __init__(self, message: str, *, code: int | None = None) -> None:
@@ -35,7 +37,7 @@ def permission_settings(mode: str, cwd: str) -> tuple[str, dict]:
 class CodexClient:
     def __init__(self, cwd: Path, *, command: list[str] | None = None) -> None:
         self.cwd = str(cwd.resolve())
-        self.command = command or ["codex", "app-server", "--listen", "stdio://"]
+        self.command = command or codex_command()
         self.process: asyncio.subprocess.Process | None = None
         self.reader: asyncio.Task | None = None
         self.stderr_reader: asyncio.Task | None = None

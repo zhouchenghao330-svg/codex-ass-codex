@@ -1,21 +1,22 @@
 """Small, atomic room state; Codex itself owns the model's conversation history."""
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from .platform_support import lock_file
+
 
 class RoomStore:
     def __init__(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "state.json"
-        self.lock = (directory / "room.lock").open("a+")
+        self.lock = (directory / "room.lock").open("a+b")
         try:
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_file(self.lock)
         except OSError:
             self.lock.close()
             raise RuntimeError("这个目录的 Codex Room 已在运行，请回到原来的终端。") from None

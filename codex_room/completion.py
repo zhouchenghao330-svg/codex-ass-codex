@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Mapping
 
 from .colors import COLOR_CHOICES, normalize_color
+from .platform_support import WINDOWS
 
 
 COMMANDS = (
@@ -61,7 +62,7 @@ def tokens(text: str) -> list[Token]:
                 quote = ""
             elif not quote and char in "\"'":
                 quote = char
-            elif char == "\\" and quote != "'" and position + 1 < len(text):
+            elif char == "\\" and not WINDOWS and quote != "'" and position + 1 < len(text):
                 following = text[position + 1]
                 if not quote or following in '\\"$`\n':
                     position += 1
@@ -109,6 +110,8 @@ class CompletionEngine:
         self._directory_cache: dict[Path, tuple[float, tuple[str, ...]]] = {}
 
     def directories(self, query: str, cwd: Path, *, refresh: bool) -> list[Candidate]:
+        if WINDOWS:
+            query = query.replace("\\", "/")
         if query == "~":
             return [Candidate("~/", "主目录", directory=True)]
         parent_text, _, prefix = query.rpartition("/")
