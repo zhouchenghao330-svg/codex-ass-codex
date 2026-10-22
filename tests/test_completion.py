@@ -43,7 +43,7 @@ class CompletionTests(unittest.TestCase):
         agents = {"a": Agent("a", "a", "purple"), "b": Agent("b", "b", "mint", model="custom-model")}
         cases = {
             "/mem": ["/members"], "@a /mod": ["/model"], "/permisson": ["/permissions"],
-            "/focus ": ["a", "b"], "@a /stop @": ["@a", "@b"],
+            "/focus ": ["a", "b", "all"], "/focus al": ["all"], "@a /stop @": ["@a", "@b"],
             "/d": ["/del"], "/del ": ["a", "b"], "@a /del @": ["@a", "@b"],
             "/model te": ["test-model"], "/model cu": ["custom-model"],
             "/model test-model ": ["low", "high"], "/permissions w": ["workspace"],
@@ -136,7 +136,7 @@ class CompletionUITests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 self.assertTrue(app.sidebar_visible)
                 await draft("/focus ")
-                self.assertEqual(app.completion_matches, ["a", "b"])
+                self.assertEqual(app.completion_matches, ["a", "b", "all"])
                 await pilot.press("down", "tab")
                 self.assertEqual(composer.value, "/focus b ")
                 self.assertEqual(app.selected, "a")
@@ -146,6 +146,17 @@ class CompletionUITests(unittest.IsolatedAsyncioTestCase):
 
                 await app.submit("@a slow")
                 app.select("b")
+                await draft("/focus al")
+                await pilot.press("tab")
+                self.assertEqual(composer.value, "/focus all ")
+                self.assertFalse(app.show_all)
+                await pilot.press("enter")
+                self.assertTrue(app.show_all)
+                self.assertEqual(app.selected, "b")
+                self.assertTrue(all(card.display for card in app.cards.values()))
+                self.assertTrue(app.agents["a"].busy)
+                self.assertFalse(any(entry.sender == "you" and "/focus" in entry.body for entry in app.entries))
+                await app.submit("/focus b")
                 await draft("/stop ")
                 await pilot.press("enter")
                 self.assertEqual(composer.value, "/stop a ")

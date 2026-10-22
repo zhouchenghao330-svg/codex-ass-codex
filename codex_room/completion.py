@@ -15,7 +15,7 @@ from .member_config import resolve_member
 
 COMMANDS = (
     ("/add", "创建 Codex · 名字 [目录] [--color 颜色]"),
-    ("/focus", "切到成员的单人对话 · 名字"),
+    ("/focus", "切到单人对话或聊天室 · 名字 / all"),
     ("/stop", "停止成员并取消尚未发出的消息 · 名字"),
     ("/del", "移除成员，先归档会话记录 · 名字"),
     ("/rename", "重命名成员，保留会话 · [原名] 新名"),
@@ -179,6 +179,8 @@ class CompletionEngine:
                     candidates = [Candidate(("@" if query.startswith("@") else "") + agent.label, member=name)
                                   for name, agent in agents.items() if name.startswith(query.lstrip("@").casefold())
                                   or agent.label.casefold().startswith(query.lstrip("@").casefold())]
+                    if command == "/focus" and "all".startswith(query.casefold()):
+                        candidates.append(Candidate("all", "聊天室 · 显示全部消息"))
                 elif command == "/permissions" and not arguments:
                     kind = "permission"
                     candidates = [Candidate(value, detail) for value, detail in PERMISSIONS if value.startswith(query.lower())]

@@ -424,6 +424,7 @@ class Help(ModalScreen[None]):
                 "[b #a9b6ff]/add 名字 [目录][/]    新建 Codex，省略目录则沿用群聊目录\n"
                 "[b #a9b6ff]--color blue[/]        创建时指定颜色\n"
                 "[b #a9b6ff]/focus 名字[/]         切到该成员的单人对话\n"
+                "[b #a9b6ff]/focus all[/]          回到聊天室的全部消息\n"
                 "[b #a9b6ff]/members[/]            展开 / 收起成员列表\n"
                 "[b #a9b6ff]/stop 名字[/]          停止回复，取消尚未发出的消息\n"
                 "[b #a9b6ff]/del 名字[/]           移除成员，会话记录先归档\n"
@@ -1285,6 +1286,9 @@ class CodexRoom(App):
                 return False
             return await self.delete_agent(name)
         elif command in {"/focus", "/stop"}:
+            if command == "/focus" and len(parts) == 2 and parts[1].casefold() == "all":
+                self.action_all_messages()
+                return True
             name = resolve_member(parts[1], self.agents) if len(parts) > 1 else target
             if name not in self.agents:
                 self.notify(f"没有 @{name}。" if name else "请先创建 Codex。", severity="warning")
