@@ -14,7 +14,7 @@ from .colors import COLOR_CHOICES, normalize_color
 COMMANDS = (
     ("/add", "创建 Codex · 名字 [目录] [--color 颜色]"),
     ("/focus", "切到成员的单人对话 · 名字"),
-    ("/stop", "停止成员并取消排队消息 · 名字"),
+    ("/stop", "停止成员并取消尚未发出的消息 · 名字"),
     ("/del", "移除成员，先归档会话记录 · 名字"),
     ("/model", "选择模型 · [模型] [推理强度]"),
     ("/permissions", "选择权限 · [full / workspace / read-only]"),

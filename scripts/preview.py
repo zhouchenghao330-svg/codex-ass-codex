@@ -134,8 +134,9 @@ async def preview() -> None:
         composer.value = "@exp 完成后再检查日志"
         composer.cursor_position = len(composer.value)
         await pilot.press("enter")
-        queued = app.agents["exp"].queue[0]
-        assert queued.state == "queued"
+        steered = next(entry for entry in reversed(app.entries) if entry.sender == "you" and entry.target == "exp")
+        assert steered.state == "steered"
+        assert not app.agents["exp"].queue
         await pilot.pause(0.08)
         capture(app, "parallel.svg", output)
 
@@ -144,7 +145,7 @@ async def preview() -> None:
         await pilot.press("enter")
         assert not app.agents["exp"].busy
         assert not app.agents["exp"].queue
-        assert queued.state == "stopped"
+        assert steered.state == "steered"
 
         # An invalid recipient must preserve the draft, without dispatching it.
         composer.value = "@missing 这条消息不能丢失"
@@ -185,16 +186,16 @@ async def preview() -> None:
         await pilot.pause()
         await pilot.press("escape")
 
-        # Stop + restart must not resurrect the cancelled queue.
+        # Stop + restart must not resend instructions already steered into the old turn.
         composer.value = "@exp 重新看一下结果"
         composer.cursor_position = len(composer.value)
         await pilot.press("enter")
         await asyncio.gather(*list(app.tasks.values()))
         assert not any(agent.busy for agent in app.agents.values())
         assert not any(entry.state == "working" for entry in app.entries)
-        assert not any(entry.sender == "exp" and "完成后再检查日志" in entry.body for entry in app.entries)
         await pilot.pause()
         last_reply = next(entry for entry in reversed(app.entries) if entry.sender == "exp")
+        assert "完成后再检查日志" not in last_reply.body
         assert app.cards[id(last_reply)].work_summary.display
         capture(app, "completed.svg", output)
         body = app.cards[id(last_reply)].body
@@ -232,7 +233,7 @@ async def preview() -> None:
         capture(app, "compact-sidebar.svg", output)
         await pilot.click("#close-sidebar")
         assert not app.sidebar_visible
-        print("PASS: routing, parallel replies, queue, stop/restart, completion, add-member, filters, selection/copy, help, resize, sidebar")
+        print("PASS: routing, parallel replies, steer, stop/restart, completion, add-member, filters, selection/copy, help, resize, sidebar")
         print(f"Screenshots: {output.resolve()}")
 
 

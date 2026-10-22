@@ -140,7 +140,9 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 composer.value = 'follow up without a mention'
                 composer.cursor_position = len(composer.value)
                 await pilot.press('enter')
-                self.assertEqual(app.agents['a'].queue[-1].body, 'follow up without a mention')
+                followup = next(entry for entry in app.agents['a'].history if entry.sender == 'you' and entry.body == 'follow up without a mention')
+                self.assertEqual(followup.state, 'steered')
+                self.assertFalse(app.agents['a'].queue)
                 self.assertEqual(app.agents['b'].history, [])
                 composer.value = '@missing preserve this draft'
                 composer.cursor_position = len(composer.value)

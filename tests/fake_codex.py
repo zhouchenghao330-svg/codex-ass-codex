@@ -7,6 +7,9 @@ from pathlib import Path
 
 threads = {}
 turns = {}
+thread_turns = {}
+steering = {}
+steer_ready = {}
 requests = {}
 sequence = 0
 
@@ -28,7 +31,9 @@ async def finish(thread, turn, text, params):
     global sequence
     try:
         markdown = text == "markdown"
-        if text == "slow":
+        if text == "steer-hold":
+            await steer_ready[turn].wait()
+        elif text == "slow":
             await asyncio.sleep(30)
         else:
             await asyncio.sleep(0.03)
@@ -94,6 +99,8 @@ async def finish(thread, turn, text, params):
             text = json.dumps({"cwd": str(cwd), "threadCwd": threads[thread]["cwd"],
                                "marker": (cwd / "marker.txt").read_text(), "model": params.get("model"),
                                "sandbox": params["sandboxPolicy"]})
+        if steering.get(turn):
+            text += "\nSTEERED: " + json.dumps(steering[turn], ensure_ascii=False)
         if text == "fail":
             send({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": turn, "status": "failed", "error": {"message": "test failure"}}}})
             return
@@ -140,8 +147,34 @@ async def main():
             sequence += 1
             turn = f"turn-{sequence}"
             thread = params["threadId"]
+            thread_turns[thread] = turn
+            steering[turn] = []
+            steer_ready[turn] = asyncio.Event()
             turns[turn] = asyncio.create_task(finish(thread, turn, params["input"][0]["text"], params))
             result = {"turn": {"id": turn, "status": "inProgress"}}
+        elif method == "turn/steer":
+            thread = params["threadId"]
+            turn = thread_turns.get(thread)
+            text = params["input"][0]["text"]
+            if text == "reject-steer":
+                send({"id": message["id"], "error": {"code": -32602, "message": "steering rejected by fixture"}})
+                continue
+            if text == "race-to-next" and turn and not turns[turn].done():
+                turns[turn].cancel()
+                await turns[turn]
+            if not turn or turns[turn].done():
+                send({"id": message["id"], "error": {"code": -32600, "message": "no active turn to steer"}})
+                continue
+            if params["expectedTurnId"] != turn:
+                send({"id": message["id"], "error": {"code": -32600, "message": "turn id mismatch"}})
+                continue
+            steering[turn].append(text)
+            if text in {"finish-steer", "finish-and-ack"}:
+                steer_ready[turn].set()
+            if text == "finish-and-ack":
+                await turns[turn]
+                await asyncio.sleep(0.05)
+            result = {"turnId": turn}
         elif method == "turn/interrupt":
             task = turns.get(params["turnId"])
             if task:

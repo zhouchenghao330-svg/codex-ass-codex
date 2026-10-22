@@ -132,7 +132,7 @@ class ConversationUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(all(not restored.cards[id(entry)].display for entry in restored.entries
                                     if entry.sender == "a" or entry.target == "a"))
 
-    async def test_reply_header_directory_bottom_timing_queue_and_history(self):
+    async def test_reply_header_directory_bottom_timing_and_history(self):
         with tempfile.TemporaryDirectory() as tmp, patch("codex_room.app.CodexClient", client):
             state = Path(tmp)
             app = CodexRoom(cwd=ROOT, state_dir=state)
@@ -140,7 +140,8 @@ class ConversationUITests(unittest.IsolatedAsyncioTestCase):
                 await app.connection_task
                 await app.submit("/add a")
                 await app.submit("@a thinking")
-                # Queue time must not count as work time on this second reply.
+                await asyncio.wait_for(app.tasks["a"], 5)
+                # A fresh turn gets its own clock rather than reusing the previous duration.
                 await app.submit("@a next")
                 await asyncio.wait_for(app.tasks["a"], 5)
                 await pilot.pause()

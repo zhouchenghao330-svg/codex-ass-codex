@@ -10,7 +10,9 @@ from typing import Awaitable, Callable
 
 
 class CodexError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def clean_error(value: object) -> str:
@@ -125,7 +127,7 @@ class CodexClient:
                     if future is not None and not future.done():
                         if "error" in message:
                             error = message["error"]
-                            future.set_exception(CodexError(clean_error(error.get("message", error))))
+                            future.set_exception(CodexError(clean_error(error.get("message", error)), code=error.get("code")))
                         else:
                             future.set_result(message.get("result", {}))
         except asyncio.CancelledError:
@@ -170,7 +172,25 @@ class CodexClient:
             agent.effort = result.get("reasoningEffort") or ""
         return result
 
-    async def run_turn(self, agent, text: str, on_event: Callable[[dict], Awaitable[None]]) -> dict:
+    async def steer_turn(self, thread_id: str, text: str) -> bool:
+        turn_id = self.active.get(thread_id)
+        if not turn_id:
+            return False
+        try:
+            await self.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
+                                             "input": [{"type": "text", "text": text}]})
+        except CodexError as exc:
+            # Only a definite rejection due to completion may start a fresh turn.
+            # Timeouts and transport failures can already have delivered the input.
+            if exc.code in {-32600, -32602} and re.search(
+                r"no active turn|turn.*(?:mismatch|does not match)|expected.*turn.*(?:match|actual)", str(exc), re.I
+            ):
+                return False
+            raise
+        return True
+
+    async def run_turn(self, agent, text: str, on_event: Callable[[dict], Awaitable[None]],
+                       *, on_started: Callable[[], Awaitable[None]] | None = None) -> dict:
         thread_id = agent.thread_id
         if not thread_id:
             raise CodexError("尚未创建 Codex 会话。")
@@ -190,6 +210,8 @@ class CodexClient:
             response = await asyncio.shield(starting)
             turn_id = response["turn"]["id"]
             self.active[thread_id] = turn_id
+            if on_started:
+                await on_started()
             while True:
                 event = await queue.get()
                 method, data = event["method"], event.get("params", {})

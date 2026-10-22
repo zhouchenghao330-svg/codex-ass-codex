@@ -27,7 +27,7 @@ async def wait_until(predicate, pilot):
 
 
 class MemberTests(unittest.IsolatedAsyncioTestCase):
-    async def test_delete_running_member_archives_cancelled_queue_and_preserves_other_work(self):
+    async def test_delete_running_member_archives_steered_inputs_and_preserves_other_work(self):
         with tempfile.TemporaryDirectory() as tmp, patch("codex_room.app.CodexClient", client):
             state_dir = Path(tmp) / "state"
             app = CodexRoom(cwd=ROOT, state_dir=state_dir)
@@ -36,7 +36,8 @@ class MemberTests(unittest.IsolatedAsyncioTestCase):
                 await app.submit("/add a")
                 await app.submit("/add b")
                 await app.submit("@a slow")
-                await app.submit("@a queued request")
+                await wait_until(lambda: bool(app.client.active), pilot)
+                await app.submit("@a additional instruction")
                 await app.submit("@b slow")
                 await wait_until(lambda: len(app.client.active) == 2, pilot)
                 old_thread = app.agents["a"].thread_id
@@ -72,7 +73,7 @@ class MemberTests(unittest.IsolatedAsyncioTestCase):
                 archive = json.loads(archive_path.read_text())
                 self.assertEqual(archive["agent"]["thread_id"], old_thread)
                 self.assertEqual(archive["agent"]["cwd"], str(ROOT))
-                self.assertTrue(any(entry["body"] == "queued request" and entry["state"] == "stopped"
+                self.assertTrue(any(entry["body"] == "additional instruction" and entry["state"] == "steered"
                                     for entry in archive["entries"]))
                 answer = next(entry for entry in archive["entries"] if entry["sender"] == "a")
                 self.assertEqual(answer["state"], "stopped")

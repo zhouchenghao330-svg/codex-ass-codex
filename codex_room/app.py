@@ -68,6 +68,8 @@ class Agent:
     busy: bool = False
     phase: str = "等待你的消息"
     queue: deque[Entry] = field(default_factory=deque)
+    delivery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    steered_inputs: list[str] = field(default_factory=list)
     history: list[Entry] = field(default_factory=list)
     thread_id: str | None = None
     model: str = ""
@@ -106,7 +108,7 @@ class Member(Static):
         text.append(f"  @{agent.name}\n", style=MUTED)
         text.append(f"  {status}", style=color)
         if agent.queue:
-            text.append(f"  +{len(agent.queue)} 待处理", style="#e8b878")
+            text.append(f"  +{len(agent.queue)} 待发送", style="#e8b878")
         if agent.cwd:
             text.append(f"\n  ⌂ {Path(agent.cwd).name or agent.cwd}", style=MUTED)
         self.set_class(selected, "selected")
@@ -187,7 +189,9 @@ class MessageCard(Vertical):
                 text.append(agent.label, style=f"bold {self.reply_colors.accent}")
                 text.append(f"  @{agent.name}", style=self.reply_colors.muted)
             if entry.state == "queued":
-                text.append("   ◷ 待处理", style="#e8b878")
+                text.append("   ◷ 发送中", style="#e8b878")
+            elif entry.state == "steered":
+                text.append("   ↳ 已追加", style=MUTED)
             elif entry.state == "stopped":
                 text.append("   · 已停止", style=MUTED)
             elif entry.state == "failed":
@@ -299,7 +303,7 @@ class Help(ModalScreen[None]):
                 "[b #a9b6ff]--color blue[/]        创建时指定颜色\n"
                 "[b #a9b6ff]/focus 名字[/]         切到该成员的单人对话\n"
                 "[b #a9b6ff]/members[/]            展开 / 收起成员列表\n"
-                "[b #a9b6ff]/stop 名字[/]          停止回复，并取消该成员的排队消息\n"
+                "[b #a9b6ff]/stop 名字[/]          停止回复，取消尚未发出的消息\n"
                 "[b #a9b6ff]/del 名字[/]           移除成员，会话记录先归档\n"
                 "[b #a9b6ff]/model[/]              选择模型和推理强度\n"
                 "[b #a9b6ff]/permissions[/]        选择权限，默认 Full Access\n"
@@ -308,6 +312,7 @@ class Help(ModalScreen[None]):
                 "[b]Ctrl+1 / 2 / 3[/] 切换成员   [b]Ctrl+L[/] 全部 / 单人视图\n"
                 "[b]Ctrl+N[/] 添加成员           [b]@[/] 打开成员选择\n"
                 "[b]↑ / ↓[/] 选择候选           [b]Tab / Enter[/] 补全\n"
+                "[b]空输入框按 ↑[/] 调出历史，再用 ↑ / ↓ 翻阅\n"
                 "[b]/命令、成员、模型、权限、目录和颜色[/] 均支持补全\n"
                 "[b]Ctrl+B[/] 展开 / 收起成员\n"
                 "[b]Ctrl+T[/] 展开 / 收起工具调用详情\n"
@@ -331,10 +336,42 @@ class CompletionList(OptionList, can_focus=False):
 
 
 class ComposerInput(Input):
-    """Complete the token at the cursor without dispatching a message."""
+    """Complete tokens and recall submitted inputs without dispatching either."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.reset_history_navigation()
+
+    def reset_history_navigation(self) -> None:
+        self._history_index: int | None = None
+        self._history_values: list[str] = []
+        self._history_drafts: dict[int, tuple[str, int]] = {}
+
+    def recall_history(self, direction: int) -> bool:
+        if self._history_index is None:
+            if direction > 0 or self.value or not self.app.input_history:
+                return False
+            self._history_values = self.app.input_history[:]
+            self._history_index = len(self._history_values)
+        self._history_drafts[self._history_index] = (self.value, self.cursor_position)
+        index = max(0, min(len(self._history_values), self._history_index + direction))
+        original = self._history_values[index] if index < len(self._history_values) else ""
+        value, cursor = self._history_drafts.get(index, (original, len(original)))
+        self._history_index = index
+        self.value = value
+        self.cursor_position = cursor
+        # Recalled slash commands must remain browsable until the user edits or presses Tab.
+        self.app.close_completions()
+        self.app.refresh_recipient()
+        return True
 
     async def _on_key(self, event: events.Key) -> None:
         app = self.app
+        if (event.key in {"up", "down"} and (not self.value or not app.completion_open)
+                and self.recall_history(-1 if event.key == "up" else 1)):
+            event.prevent_default()
+            event.stop()
+            return
         if event.key in {"up", "down", "tab", "shift+tab", "escape"}:
             app.refresh_completions(explicit=event.key != "escape")
         if app.completion_open and event.key in {"up", "down", "tab", "shift+tab", "escape"}:
@@ -434,6 +471,10 @@ class CodexRoom(App):
         self.defaults = {"model": "", "effort": ""}
         self.store = None if demo else RoomStore(state_dir or self.cwd / ".codex-room")
         self.saved = self.store.load() if self.store else {}
+        self.input_history: list[str] = self.saved.get("input_history", [
+            f"@{entry['target']} {entry['body']}" for entry in self.saved.get("entries", [])
+            if entry.get("sender") == "you" and entry.get("target") and entry.get("body")
+        ])
         self.dirty = False
         self.shutting_down = False
         self.request_lock = asyncio.Lock()
@@ -688,7 +729,7 @@ class CodexRoom(App):
         if name in self.agents:
             agent = self.agents[name]
             recipient.append(f"@{name}", style=agent.accent)
-            recipient.append(" · 排队发送" if agent.busy else " · 空闲", style=MUTED)
+            recipient.append(" · 追加到当前工作" if agent.busy else " · 空闲", style=MUTED)
             recipient.append(f" · ⌂ {Path(agent.cwd).name or agent.cwd}", style=MUTED)
             self.room_screen.query_one("#recipient", Static).tooltip = f"工作目录：{agent.cwd}"
             if not self.demo:
@@ -887,7 +928,13 @@ class CodexRoom(App):
             return
         accepted = await self.submit(value)
         if accepted:
-            event.input.value = ""
+            if not self.input_history or self.input_history[-1] != value:
+                self.input_history.append(value)
+                self.dirty = True
+            event.input.reset_history_navigation()
+            if event.input.value.strip() == value:
+                event.input.value = ""
+            self.save_state()
         self.refresh_chrome()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -928,6 +975,8 @@ class CodexRoom(App):
             self.select(name)
         if not agent.busy:
             self.start_agent(name)
+        else:
+            await self.deliver_followups(name)
         self.refresh_chrome()
         return True
 
@@ -1077,7 +1126,7 @@ class CodexRoom(App):
         members = [agent.config() for agent in self.agents.values()]
         try:
             self.store.save({"version": 2, "selected": self.selected, "show_all": self.show_all, "agents": members,
-                             "entries": [asdict(entry) for entry in self.entries]})
+                             "entries": [asdict(entry) for entry in self.entries], "input_history": self.input_history})
             self.dirty = False
         except OSError as exc:
             self.notify(f"保存群聊失败：{exc}", severity="error")
@@ -1120,15 +1169,55 @@ class CodexRoom(App):
         self.tasks[name] = asyncio.create_task(self.run_agent(name))
 
     def reply_for(self, name: str, body: str) -> str:
-        return f"收到：{body}\n\n这是一条界面演示回复。你可以继续输入，测试点名、并行回复和排队。\n（未连接真实 Codex，未执行命令）"
+        return f"收到：{body}\n\n这是一条界面演示回复。你可以继续输入，测试点名、并行回复和追加消息。\n（未连接真实 Codex，未执行命令）"
+
+    async def deliver_followups(self, name: str) -> None:
+        agent = self.agents[name]
+        async with agent.delivery_lock:
+            while agent.queue and name in self.active_entries:
+                request = agent.queue[0]
+                answer = self.active_entries[name][1]
+                try:
+                    if self.demo:
+                        agent.steered_inputs.append(request.body)
+                    elif not self.client or not agent.thread_id or not await self.client.steer_turn(agent.thread_id, request.body):
+                        break
+                except CodexError as exc:
+                    # Never silently resend a request whose acceptance is uncertain.
+                    if agent.queue and agent.queue[0] is request:
+                        agent.queue.popleft()
+                    request.state = "failed"
+                    self.cards[id(request)].refresh_entry()
+                    await self.add_entry(Entry("system", f"@{name} 消息追加未确认：{clean_error(exc)}。未自动重发。", target=name))
+                    continue
+                if not agent.queue or agent.queue[0] is not request:
+                    break
+                agent.queue.popleft()
+                request.state = "steered"
+                self.cards[id(request)].refresh_entry()
+                # Keep the continuing reply below the instructions it is responding to.
+                self.entries.pop(next(i for i, entry in enumerate(self.entries) if entry is answer))
+                self.entries.insert(self.entries.index(request) + 1, answer)
+                agent.history.pop(next(i for i, entry in enumerate(agent.history) if entry is answer))
+                agent.history.append(answer)
+                self.room_screen.query_one("#timeline", VerticalScroll).move_child(
+                    self.cards[id(answer)], after=self.cards[id(request)]
+                )
+                self.dirty = True
+        self.save_state()
+        self.refresh_chrome()
 
     async def run_agent(self, name: str) -> None:
         agent = self.agents[name]
         answer = None
         started = None
         try:
-            while agent.queue:
-                request = agent.queue.popleft()
+            while True:
+                async with agent.delivery_lock:
+                    if not agent.queue:
+                        break
+                    request = agent.queue.popleft()
+                agent.steered_inputs.clear()
                 request.state = "done"
                 self.cards[id(request)].refresh_entry()
                 agent.phase = "正在启动会话…" if not self.demo else "正在思考…"
@@ -1138,11 +1227,16 @@ class CodexRoom(App):
                 card = await self.add_entry(answer)
                 card.started_at = started
                 if self.demo:
+                    await self.deliver_followups(name)
                     await asyncio.sleep(0.7 * self.speed)
-                    reply = self.reply_for(name, request.body)
                     agent.phase = "正在回复…"
-                    for index in range(0, len(reply), 7):
+                    index = 0
+                    while True:
+                        reply = self.reply_for(name, "\n".join([request.body, *agent.steered_inputs]))
+                        if index >= len(reply):
+                            break
                         answer.body = reply[:index + 7]
+                        index += 7
                         self.refresh_answer(answer)
                         await asyncio.sleep(0.045 * self.speed)
                     answer.state = "done"
@@ -1292,7 +1386,7 @@ class CodexRoom(App):
             else:
                 self.cards[id(answer)].refresh_working(self.frame)
 
-        turn = await self.client.run_turn(settings, text, receive)
+        turn = await self.client.run_turn(settings, text, receive, on_started=lambda: self.deliver_followups(name))
         answer.state = "stopped" if turn.get("status") == "interrupted" else "done"
         answer.finish_tools("stopped" if answer.state == "stopped" else "completed")
         if not answer.body and not answer.blocks:
@@ -1365,7 +1459,7 @@ class CodexRoom(App):
         if self.client and self.client.process and self.client.process.returncode is not None:
             self.connected = False
             self.connection_error = "Codex 连接已关闭，可用 /reconnect 重新连接。"
-        await self.add_entry(Entry("system", f"@{name} 已停止；取消 {cancelled} 条排队消息。", target=name))
+        await self.add_entry(Entry("system", f"@{name} 已停止；取消 {cancelled} 条尚未发出的消息。", target=name))
         self.refresh_chrome()
 
     async def on_unmount(self) -> None:
