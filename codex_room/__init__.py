@@ -1,1 +1,1 @@
-"""Codex Room: an interactive, explicitly simulated TUI prototype."""
+"""Codex Room: a Rust terminal UI backed by independent real Codex sessions."""

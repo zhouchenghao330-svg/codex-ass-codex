@@ -30,6 +30,16 @@ def send(message):
 async def finish(thread, turn, text, params):
     global sequence
     try:
+        if text == "continuous-stream":
+            body = ""
+            for index in range(120):
+                delta = f"stream line {index:03d}\n\n"
+                body += delta
+                send({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":turn,"itemId":"continuous","delta":delta}})
+                await asyncio.sleep(.05)
+            send({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"id":"continuous","type":"agentMessage","text":body}}})
+            send({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed"}}})
+            return
         markdown = text == "markdown"
         stream_prefix = ""
         if text in {"steer-stream", "steer-complete"}:

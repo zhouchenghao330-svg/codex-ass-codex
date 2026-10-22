@@ -1,8 +1,8 @@
 # 终端原生呈现调研与验证
 
-更新：2026-10-22。范围：调研和独立小样，**尚未替换 Codex Room 的启动入口**。
+更新：2026-10-22。这是选型过程的历史记录；用户随后选择 Rust Fullscreen，正式入口已迁移，见 [当前实现与边界](rust-fullscreen.md)。
 
-后续决定：先不迁移正式项目，使用相同数据比较 Rust Inline、Rust Fullscreen、当前 Textual 与关闭捕获的 Textual。四组实验已经独立落在 [terminal-lab](../experiments/terminal-lab/README.md)，入口为 `uv run python scripts/terminal_lab.py --lines 10000`。下文保留此前 Python Inline 研究；正式选型以同一 Orca 终端中的体验结果为依据。
+当时的安排是先使用相同数据比较 Rust Inline、Rust Fullscreen、Textual 与关闭捕获的 Textual。四组实验保留在 [terminal-lab](../experiments/terminal-lab/README.md)，入口为 `uv run python scripts/terminal_lab.py --lines 10000`。下文保留此前 Python Inline 研究。
 
 ## 结论
 

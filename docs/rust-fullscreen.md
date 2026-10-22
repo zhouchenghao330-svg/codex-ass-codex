@@ -1,0 +1,53 @@
+# Rust Fullscreen 迁移
+
+用户在同一 Orca 终端里实测后选择 Ratatui Fullscreen：Inline 最跟手，Rust Fullscreen 接近，两个 Textual 方案仍明显不顺。正式方向确定为 Fullscreen，Inline 保留为实验基线。
+
+## 代码边界
+
+- `terminal-ui/`：Rust + Ratatui。输入编辑、Markdown 排版、工具展开、成员视图、拖选、滚动、转发草稿均在此进程处理。
+- `codex_room/backend.py`：无界面的 Python 服务，复用经过验证的 `runtime.py` 与 `storage.py`，负责 Codex RPC、steer、取消、交互请求和 v2 存储。正常运行不加载 Textual。
+- `models.py`、`quotes.py`：新旧界面共享的消息与引用结构，不依赖界面框架。
+- `launcher.py`：构建并启动 Rust；`--legacy-ui` 显式启动旧 Textual。
+
+前后端通过子进程 stdio 的 JSON 行通信，没有监听端口。UI 命令与 Codex RPC 是两条独立通道。鼠标事件、选区更新和输入编辑不会跨进程等待 Python。接收消息通过独立读线程进入 Rust，写消息也不会阻塞绘制循环。后端以约 33ms 合并消息补丁；状态定期原子保存，完成和退出时落盘。
+
+此次是 UI 迁移，**不是整个项目已改写为纯 Rust**。保留通信层能减少同时替换两个状态机的风险；以后如有必要，可沿既有 JSON 协议继续迁移服务。
+
+## 体验与性能
+
+稳定历史按消息缓存 Markdown 和排版，流式更新只重排受影响的消息。实际绘制只遍历可见行；拖选和滚动不解析 Markdown、不复制全段历史。工具组标题只切换摘要展开与收起，全部详情独立控制；展开时固定当前位置。
+
+拖选范围只属于聊天正文。拖出上下边缘会自动滚动，起点保持在原行；双击连续片段，三击行，点击高亮外取消。保留选区时暂缓合入会改变正文行位置的更新，后台任务继续；取消选区后应用缓存的新输出。窗口宽度变化会重新排版并清除旧选区。
+
+输入按 grapheme 编辑；图片和长粘贴为可撤销的原子块。Rust 内部使用 UTF-8 字节偏移，存储与 Python 通信时转换成原来的 Unicode 字符偏移。图片粘贴在本地同步识别，保证“粘贴后立刻 Enter”的顺序，不等后端往返。
+
+转发保留选区边界正文与跨过的折叠详情，不自动摘要。切换接收者保留草稿，返回来源恢复原草稿并滚至最新。视图请求带递增版本，后台旧状态不会把刚选择的成员切回去。
+
+## 兼容与边界
+
+沿用 `.codex-room/state.json` v2、成员的原始 `thread_id`、名称、颜色、路径、历史、附件和计时。旧的未完成请求标记停止，不自动重发。新界面还会保存各视图草稿；旧 Textual 可以读取主要会话数据，但不负责新 UI 的草稿交互。保存时保留已存在的未知字段。
+
+真实模式持有原有房间锁。删除成员先停止任务，再归档记录，不删除工作目录或 Codex 原生历史。退出先恢复终端，再等待后端取消；无法确认时关闭 app-server。终端使用基本 raw/mouse/paste 模式，不开启遗留问题涉及的 Kitty 扩展键盘模式。
+
+当前创建成员由输入区的 `/add` 完成，按钮和 Ctrl+N 会预填命令；目录和颜色仍可补全。鼠标指针样式由宿主终端决定，未承诺与 Orca 原生选字完全相同。Shift+Enter 依赖终端是否单独上报，Ctrl+J 始终可换行。窄于 65 列时不绘制侧栏，可以通过 @ 补全或 `/focus` 切换。
+
+原生子代理聊天室仍是后续功能，不在此次迁移里冒充完成。V2 child 的直接输入限制、真实停止与完整历史合流见 [交接文档](next-version-handoff.md)。
+
+## 验证
+
+```sh
+cargo test --locked --manifest-path terminal-ui/Cargo.toml
+cargo build --release --locked --manifest-path terminal-ui/Cargo.toml
+uv run python -m unittest discover -s tests -v
+uv run scripts/check_rust_ui.py
+```
+
+Rust 单测覆盖 Unicode/原子块、选区边界、折叠详情、多人状态、过期视图状态、发送确认以及一万条历史的缓存。PTY 检查把真实 Rust UI 接到本地假 app-server，验证工具展开、输入历史、恢复、转发、返回最新位置、拖选自动滚动、缩放和退出后的退格恢复。不操作真实剪贴板或用户房间。
+
+以下检查会调用真实模型两次，在临时目录创建独立房间：
+
+```sh
+uv run scripts/check_rust_ui_live.py
+```
+
+比较实验仍可用 `uv run python scripts/terminal_lab.py --lines 10000`。机器内绘制或缓存检查不能代替 Orca 中主观拖选体验，后续以真实使用反馈继续优化。

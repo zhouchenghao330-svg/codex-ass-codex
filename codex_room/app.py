@@ -107,9 +107,15 @@ class Member(Static):
             super().__init__()
 
     def __init__(self, agent: Agent) -> None:
-        super().__init__(id=f"member-{agent.name}", classes="member")
+        super().__init__(id=self.widget_id(agent.name), classes="member")
         self.agent = agent
         self.tooltip = agent.cwd
+
+    @staticmethod
+    def widget_id(name: str) -> str:
+        # Rust accepts Unicode internal names. Keep existing ASCII selectors and
+        # encode other names into Textual's narrower widget identifier alphabet.
+        return f"member-{name}" if name.isascii() else "member--" + name.encode("utf-8").hex()
 
     def refresh_member(self, selected: bool, frame: str) -> None:
         agent = self.agent
@@ -669,7 +675,7 @@ class CodexRoom(App):
     def reveal_selected(self) -> None:
         if not self.is_running or self.shutting_down or not self.sidebar_visible or self.selected not in self.agents:
             return
-        member = self.room_screen.query_one(f"#member-{self.selected}")
+        member = self.room_screen.query_one("#" + Member.widget_id(self.selected))
         self.room_screen.query_one("#members", VerticalScroll).scroll_to_widget(
             member, animate=False, origin_visible=False, immediate=True
         )
@@ -1402,7 +1408,7 @@ class CodexRoom(App):
             return
         members = [agent.config() for agent in self.agents.values()]
         try:
-            self.store.save({"version": 2, "selected": self.selected, "show_all": self.show_all, "agents": members,
+            self.store.save({**self.saved, "version": 2, "selected": self.selected, "show_all": self.show_all, "agents": members,
                              "entries": [asdict(entry) for entry in self.entries], "input_history": self.input_history})
             self.dirty = False
         except OSError as exc:
@@ -1802,7 +1808,7 @@ class CodexRoom(App):
         )
         if self.selected == name:
             self.selected = next((other for other in self.agents if other != name), "")
-        await self.room_screen.query_one(f"#member-{name}", Member).remove()
+        await self.room_screen.query_one("#" + Member.widget_id(name), Member).remove()
         del self.agents[name]
         self.forward_drafts.pop(name, None)
         if self.forward_target == name:
