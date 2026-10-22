@@ -118,6 +118,14 @@ class Member(Static):
         self.post_message(self.Selected(self.agent.name))
 
 
+class ReplyBody(SelectableStatic):
+    def action_tools_group(self, index: int) -> None:
+        self.parent.cycle_tools_group(index)
+
+    def action_tool_item(self, index: int, part: int) -> None:
+        self.parent.toggle_tool_item(index, part)
+
+
 class MessageCard(Vertical):
     def __init__(self, entry: Entry, agents: dict[str, Agent]) -> None:
         super().__init__(classes=f"message {entry.sender if entry.sender in ('you', 'system') else 'agent'}")
@@ -127,10 +135,12 @@ class MessageCard(Vertical):
         if self.reply_colors:
             self.styles.background = self.reply_colors.background
         self.tools_expanded = False
+        self.tool_group_levels: dict[int, int] = {}
+        self.tool_item_expanded: dict[tuple[int, int], bool] = {}
         self.started_at = monotonic()
         self.animation_frame = 0
         self.header = SelectableStatic(classes="message-header")
-        self.body = SelectableStatic(classes="message-body")
+        self.body = ReplyBody(classes="message-body")
         self.progress = SelectableStatic(classes="working-status")
         self.work_summary = SelectableStatic(classes="work-summary")
         self.refresh_entry()
@@ -173,6 +183,25 @@ class MessageCard(Vertical):
     def on_resize(self) -> None:
         self.refresh_entry()
 
+    def cycle_tools_group(self, index: int) -> None:
+        current = self.tool_group_levels.get(index, 2 if self.tools_expanded else 0)
+        self.tool_group_levels[index] = (current + 1) % 3
+        end = index
+        while end < len(self.entry.blocks) and self.entry.blocks[end].kind != "text":
+            end += 1
+        self.tool_item_expanded = {key: value for key, value in self.tool_item_expanded.items() if not index <= key[0] < end}
+        self.body.screen.clear_selection()
+        self.refresh_entry()
+
+    def toggle_tool_item(self, index: int, part: int) -> None:
+        start = index
+        while start and self.entry.blocks[start - 1].kind != "text":
+            start -= 1
+        default = self.tool_group_levels.get(start, 2 if self.tools_expanded else 0) == 2
+        self.tool_item_expanded[index, part] = not self.tool_item_expanded.get((index, part), default)
+        self.body.screen.clear_selection()
+        self.refresh_entry()
+
     def refresh_entry(self) -> None:
         entry = self.entry
         text = Text()
@@ -209,7 +238,8 @@ class MessageCard(Vertical):
                     self.header.tooltip = agent.cwd
                 self.header.update(text)
                 self.body.display = bool(entry.body or entry.blocks or entry.state != "working")
-                self.body.update(render_reply(entry, self.tools_expanded, self.content_size.width or 80, agent.color))
+                self.body.update(render_reply(entry, self.tools_expanded, self.content_size.width or 80, agent.color,
+                    group_levels=self.tool_group_levels, expanded_items=self.tool_item_expanded, interactive=True))
                 self.refresh_working()
                 self.refresh_completion()
                 return
@@ -852,6 +882,8 @@ class CodexRoom(App):
         for card in self.cards.values():
             if card.entry.blocks:
                 card.tools_expanded = self.tools_expanded
+                card.tool_group_levels.clear()
+                card.tool_item_expanded.clear()
                 card.refresh_entry()
         if follow:
             self.call_after_refresh(self.scroll_bottom)
@@ -1366,11 +1398,13 @@ class CodexRoom(App):
                 elif kind in {"reasoning", "contextCompaction"}:
                     title = summary_title(next((part for part in reversed(item.get("summary", [])) if part.strip()), ""))
                     agent.phase = (f"正在思考：{title}" if title else "正在思考…") if kind == "reasoning" else "正在整理上下文…"
-                elif kind in {"mcpToolCall", "dynamicToolCall", "webSearch", "imageView"}:
+                elif kind and kind not in {"userMessage", "agentMessage"}:
                     block = block_for(item_id, "tool")
                     block.title = "/".join(filter(None, (item.get("server"), item.get("tool")))) or item.get("query") or item.get("path") or kind
                     block.text = json.dumps(item, ensure_ascii=False, indent=2)
                     block.status = item.get("status") or ("inProgress" if method == "item/started" else "completed")
+                    if item.get("success") is False or item.get("error"):
+                        block.status = "failed"
                     agent.phase = "正在调用工具…" if method == "item/started" else "正在分析工具结果…"
             elif method == "item/commandExecution/outputDelta":
                 block_for(item_id, "command").text += params.get("delta", "")

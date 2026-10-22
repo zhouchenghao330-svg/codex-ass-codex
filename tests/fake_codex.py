@@ -88,6 +88,26 @@ async def finish(thread, turn, text, params):
             send({"id": rid, "method": method, "params": details})
             answer = await future
             text = json.dumps(answer)
+        if text == "mixed-tools":
+            items = [
+                {"id": "native-command", "type": "commandExecution", "command": "printf fixture", "exitCode": 0,
+                 "aggregatedOutput": "command preview\nCOMMAND_OUTPUT **literal**"},
+                {"id": "mcp-search", "type": "mcpToolCall", "server": "fixture", "tool": "search",
+                 "arguments": {"query": "lookup something"}, "result": {"content": [{"type": "text", "text": "MCP preview\nMCP_RESULT"}]}},
+                {"id": "dynamic-tool", "type": "dynamicToolCall", "namespace": "functions", "tool": "exec_command",
+                 "arguments": {"cmd": "pwd"}, "contentItems": [{"type": "text", "text": "DYNAMIC_OUTPUT"}], "success": True},
+                {"id": "file-edits", "type": "fileChange", "changes": [
+                    {"path": "src/app.py", "kind": {"type": "update", "move_path": None},
+                     "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@ -1,2 +1,3 @@\n-old_value\n+new_value\n+added_value\n keep"},
+                    {"path": "src/new.py", "kind": {"type": "add"}, "diff": "new file\nsecond line\n"},
+                    {"path": "src/deleted.py", "kind": {"type": "delete"}, "diff": "old file\n"},
+                    {"path": "src/old_name.py", "kind": {"type": "update", "move_path": "src/renamed.py"}, "diff": ""},
+                 ]},
+            ]
+            for item in items:
+                send({"method": "item/started", "params": {"threadId": thread, "turnId": turn, "item": {**item, "status": "inProgress"}}})
+                send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn, "item": {**item, "status": "completed"}}})
+            text = "Tools finished."
         if text.startswith("remember "):
             threads[thread]["memory"] = text[9:]
         elif text == "recall":

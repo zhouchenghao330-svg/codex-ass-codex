@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -13,6 +12,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from .colors import member_colors
+from .tool_details import command_title, render_tool_group, tool_summary
 
 
 MUTED = "#788294"
@@ -162,37 +162,9 @@ class Entry:
             self.sync_body()
 
 
-def command_title(command: str) -> str:
-    try:
-        args = shlex.split(command)
-        if len(args) >= 3 and args[0].rsplit("/", 1)[-1] in {"sh", "bash", "zsh", "fish"} and "c" in args[1]:
-            command = args[2]
-    except ValueError:
-        pass
-    return " ".join(command.split())
-
-
-def tool_summary(blocks: list[ReplyBlock], expanded: bool, width: int) -> Text:
-    running = any(block.status == "inProgress" for block in blocks)
-    failed = sum(block.status in FAILED for block in blocks)
-    stopped = any(block.status == "stopped" for block in blocks)
-    if len(blocks) == 1:
-        block = blocks[0]
-        verb = {"command": "执行命令", "file": "修改文件", "tool": "调用工具"}.get(block.kind, "调用工具")
-        label = f"{verb} · {command_title(block.title) if block.kind == 'command' else block.title}"
-    else:
-        noun = "个命令" if all(block.kind == "command" for block in blocks) else "次工具调用"
-        label = f"{len(blocks)} {noun}"
-    status = " · 执行中" if running else (f" · {failed} 项失败" if failed else (" · 已停止" if stopped else " · 已完成"))
-    hint = "Ctrl+T 收起" if expanded else "Ctrl+T 展开"
-    suffix = status + f"  ({hint})"
-    line = Text(("▾ " if expanded else "▸ ") + label, style="#e8b878" if failed else MUTED)
-    line.truncate(max(4, width - Text(suffix).cell_len), overflow="ellipsis")
-    line.append(suffix)
-    return line
-
-
-def render_reply(entry: Entry, expanded: bool, width: int, color: str | None = None) -> Group:
+def render_reply(entry: Entry, expanded: bool, width: int, color: str | None = None, *,
+                 group_levels: dict[int, int] | None = None,
+                 expanded_items: dict[tuple[int, int], bool] | None = None, interactive: bool = False) -> Group:
     if not entry.blocks:
         return Group(ReplyMarkdown(entry.body or "正在整理思路…", color))
     rendered = []
@@ -207,19 +179,12 @@ def render_reply(entry: Entry, expanded: bool, width: int, color: str | None = N
             index += 1
             continue
         group = []
+        start = index
         while index < len(entry.blocks) and entry.blocks[index].kind != "text":
             group.append(entry.blocks[index])
             index += 1
         if rendered:
             rendered.append(Text(""))
-        details = tool_summary(group, expanded, width)
-        if expanded:
-            for tool in group:
-                title = f"$ {tool.title}" if tool.kind == "command" else tool.title
-                details.append(f"\n  {title}", style=MUTED)
-                if tool.text:
-                    details.append("\n" + tool.text.rstrip(), style=MUTED)
-                if tool.kind == "command" and tool.exit_code is not None:
-                    details.append(f"\n  [退出码 {tool.exit_code}]", style=MUTED)
-        rendered.append(details)
+        level = (group_levels or {}).get(start, 2 if expanded else 0)
+        rendered.extend(render_tool_group(group, start, level, width, expanded_items or {}, interactive))
     return Group(*rendered)

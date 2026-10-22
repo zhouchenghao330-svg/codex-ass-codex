@@ -69,13 +69,13 @@ async def main() -> None:
                     if restored.tasks["ops"].done():
                         raise AssertionError(restored.agents["ops"].history[-1].body)
                     await pilot.pause(0.05)
-            await restored.submit("@ops 这条排队消息不应该执行")
+            await restored.submit("@ops 补充说明：不要修改文件，原定 sleep 任务保持不变。")
             await asyncio.wait_for(restored.stop_agent("ops"), 30)
             assert not restored.agents["ops"].busy
             assert not restored.agents["ops"].queue
             assert not restored.client.active
-            proof["interrupt_running_command_and_clear_queue"] = True
-            print("PASS interrupt running shell command and clear queue", flush=True)
+            proof["interrupt_running_command_after_steering"] = True
+            print("PASS interrupt running shell command after steering", flush=True)
         proof["full_access_default"] = all(member.permission == "full" for member in restored.agents.values())
     output = Path("artifacts")
     output.mkdir(exist_ok=True)
