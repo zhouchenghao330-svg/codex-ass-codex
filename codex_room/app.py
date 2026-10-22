@@ -28,7 +28,7 @@ from .runtime import CodexClient, CodexError, clean_error
 from .settings import ModelSettings, PermissionSettings, RuntimeApproval, RuntimeQuestion, PERMISSION_LABELS
 from .storage import RoomStore
 from .transcript import Entry, ReplyBlock, format_duration, render_reply
-from .colors import COLOR_CHOICES, choose_color, member_colors, normalize_color
+from .colors import COLOR_CHOICES, FOREGROUND, MUTED, choose_color, member_colors, normalize_color
 from .member_config import parse_add, resolve_directory
 from .completion import Completion, CompletionEngine, is_room_command
 from .selectable import ConversationScreen, SelectableStatic
@@ -36,8 +36,13 @@ from .composer import ComposerInput
 from .rendering import ReplyVisual
 
 
-MUTED = "#788294"
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def update_text(widget: Static, content, *, layout: bool = False) -> None:
+    """Avoid repainting unchanged chrome or reflowing fixed-height text."""
+    if widget.content != content:
+        widget.update(content, layout=layout)
 
 
 def summary_title(summary: str) -> str:
@@ -115,7 +120,9 @@ class Member(Static):
         if agent.cwd:
             text.append(f"\n  ⌂ {Path(agent.cwd).name or agent.cwd}", style=MUTED)
         self.set_class(selected, "selected")
-        self.update(text)
+        layout_key = (agent.label, agent.cwd, agent.busy, len(str(len(agent.queue))) if agent.queue else 0)
+        update_text(self, text, layout=layout_key != getattr(self, "_member_layout_key", None))
+        self._member_layout_key = layout_key
 
     def on_click(self) -> None:
         self.post_message(self.Selected(self.agent.name))
@@ -152,6 +159,7 @@ class MessageCard(Vertical):
         self.reply_colors = member_colors(agents[entry.sender].color) if entry.sender in agents else None
         if self.reply_colors:
             self.styles.background = self.reply_colors.background
+            self.styles.border_left = ("solid", self.reply_colors.accent)
         self.tools_expanded = False
         self.tool_group_levels: dict[int, int] = {}
         self.tool_item_expanded: dict[tuple[int, int], bool] = {}
@@ -179,7 +187,7 @@ class MessageCard(Vertical):
         if visible:
             finished = datetime.fromisoformat(entry.finished_at)
             label = {"done": "Worked for", "stopped": "Stopped after", "failed": "Failed after"}[entry.state]
-            self.work_summary.update(Text(f"{label} {format_duration(entry.duration_seconds)} · {finished:%H:%M}", style=MUTED))
+            update_text(self.work_summary, Text(f"{label} {format_duration(entry.duration_seconds)} · {finished:%H:%M}", style=MUTED))
             self.work_summary.tooltip = finished.strftime("%Y-%m-%d %H:%M:%S %z")
 
     def refresh_working(self, frame: int | None = None) -> None:
@@ -191,14 +199,14 @@ class MessageCard(Vertical):
             return
         elapsed = int(monotonic() - self.started_at)
         duration = f"{elapsed // 60}m {elapsed % 60:02d}s" if elapsed >= 60 else f"{elapsed}s"
-        prefix = Text(f"{SPINNER[self.animation_frame % len(SPINNER)]} Working", style=self.reply_colors.accent)
+        prefix = Text(f"{SPINNER[self.animation_frame % len(SPINNER)]} Working", style=MUTED)
         suffix = f" · {duration}"
         phase = Text(f" · {self.agents[self.entry.sender].phase}", style=self.reply_colors.muted)
         width = self.content_size.width or 80
         phase.truncate(max(0, width - prefix.cell_len - Text(suffix).cell_len), overflow="ellipsis")
         prefix.append_text(phase)
         prefix.append(suffix, style=MUTED)
-        self.progress.update(prefix)
+        update_text(self.progress, prefix)
 
     def on_resize(self) -> None:
         if self._rendered_width != self.content_size.width:
@@ -251,7 +259,7 @@ class MessageCard(Vertical):
                 text.append("   · 失败", style="#e8b878")
             if entry.sender == "you":
                 text.append("  ")
-                text.append(entry.body, style="#c5cdd9")
+                text.append(entry.body, style=FOREGROUND)
             else:
                 if agent.cwd:
                     separator = "   · ⌂ "
@@ -260,7 +268,7 @@ class MessageCard(Vertical):
                     if directory:
                         text.append(f"{separator}{directory}", style=MUTED)
                     self.header.tooltip = agent.cwd
-                self.header.update(text)
+                update_text(self.header, text)
                 self.body.display = bool(entry.body or entry.blocks or entry.state != "working")
                 width = self.content_size.width or 80
                 key = (entry.body, tuple((block.id, block.kind, block.text, block.title, block.status, block.exit_code) for block in entry.blocks),
@@ -273,7 +281,7 @@ class MessageCard(Vertical):
                 self.refresh_working()
                 self.refresh_completion()
                 return
-        self.header.update(text)
+        update_text(self.header, text, layout=True)
         self.body.display = False
         self.progress.display = False
         self.work_summary.display = False
@@ -311,7 +319,10 @@ class AddMember(ModalScreen[tuple[str, str, str] | None]):
         name = self.query_one("#new-name", Input).value.strip() or "Codex"
         preview = self.query_one("#color-preview", Static)
         preview.styles.background = colors.background
-        preview.update(Text(f"● {name}  ·  回复颜色预览", style=colors.text))
+        preview.styles.border_left = ("solid", colors.accent)
+        text = Text(f"{name}", style=colors.accent)
+        text.append("  ·  正文保持米白色", style=colors.text)
+        preview.update(text)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "new-color" and self.is_mounted:
@@ -697,12 +708,12 @@ class CodexRoom(App):
         all_messages = self.room_screen.query_one("#all-messages", Button)
         all_messages.label = "▸ 全部消息" if self.show_all else "  全部消息"
         all_messages.set_class(self.show_all, "selected")
-        self.room_screen.query_one("#member-count", Static).update(f"{len(self.agents):02d}")
+        update_text(self.room_screen.query_one("#member-count", Static), f"{len(self.agents):02d}")
         self.room_screen.query_one("#empty-room", Static).display = not self.agents
         self.room_screen.query_one("#toggle-sidebar", Button).label = "‹ 收起" if self.sidebar_visible else "› 成员"
         self.refresh_recipient()
         state = "演示" if self.demo else ("已连接" if self.connected else ("离线" if self.connection_error else "连接中"))
-        self.room_screen.query_one("#connection", Static).update(f"F1 帮助 · {state}")
+        update_text(self.room_screen.query_one("#connection", Static), f"F1 帮助 · {state}")
 
     def refresh_recipient(self) -> None:
         value = self.room_screen.query_one("#message-input", ComposerInput).value
@@ -729,7 +740,7 @@ class CodexRoom(App):
             recipient = Text("↑↓ 选择 · Tab / Enter 补全 · Esc 关闭", style=MUTED)
         elif is_room_command(value):
             recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /del  /help", style=MUTED)
-        self.room_screen.query_one("#recipient", Static).update(recipient)
+        update_text(self.room_screen.query_one("#recipient", Static), recipient)
         self.room_screen.query_one("#message-input", ComposerInput).placeholder = f"给 @{self.selected} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
 
     async def add_entry(self, entry: Entry) -> MessageCard:

@@ -10,7 +10,7 @@ from textual.geometry import Region
 from textual.widgets import Input, Select
 
 from codex_room.app import CodexRoom
-from codex_room.colors import COLOR_CHOICES, choose_color, member_colors, normalize_color
+from codex_room.colors import BACKGROUND, FOREGROUND, COLOR_CHOICES, choose_color, member_colors, normalize_color
 from codex_room.runtime import CodexClient
 from codex_room.transcript import Entry
 
@@ -80,12 +80,16 @@ class ColorAppTests(unittest.IsolatedAsyncioTestCase):
                 markdown = "## 测试标题\n\n这是一条**彩色回复**，带有 `inline`。\n\n```python\nprint('hello')\n```"
                 backgrounds = set()
                 foregrounds = set()
+                markers = set()
                 for name in ("a", "b", "pink"):
                     entry = Entry(name, markdown)
                     card = await app.add_entry(entry)
                     await pilot.pause()
                     colors = member_colors(app.agents[name].color)
                     self.assertEqual(card.styles.background.hex.lower(), colors.background)
+                    self.assertEqual(card.styles.border_left[0], "solid")
+                    self.assertEqual(card.styles.border_left[1].hex.lower(), colors.accent)
+                    markers.add(card.styles.border_left[1].hex.lower())
                     backgrounds.add(card.styles.background.hex.lower())
                     strips = card.body.render_lines(Region(0, 0, card.body.size.width, card.body.size.height))
                     segments = [segment for strip in strips for segment in strip]
@@ -93,12 +97,16 @@ class ColorAppTests(unittest.IsolatedAsyncioTestCase):
                     foreground = prose.style.color.get_truecolor().hex.lower()
                     self.assertEqual(foreground, colors.text)
                     foregrounds.add(foreground)
+                    heading = next(segment for segment in segments if "测试标题" in segment.text)
+                    self.assertEqual(heading.style.color.get_truecolor().hex.lower(), FOREGROUND)
+                    self.assertTrue(heading.style.bold)
                     self.assertTrue(any(segment.style and segment.style.bgcolor and
                                         segment.style.bgcolor.get_truecolor().hex.lower() == colors.code_background
                                         for segment in segments))
                     self.assertEqual(entry.body, markdown)
-                self.assertEqual(len(backgrounds), 3)
-                self.assertEqual(len(foregrounds), 3)
+                self.assertEqual(backgrounds, {BACKGROUND})
+                self.assertEqual(foregrounds, {FOREGROUND})
+                self.assertEqual(len(markers), 3)
                 self.assertFalse(app.sidebar_visible)
                 self.assertEqual(app.query_one("#composer").region.height, 3)
 

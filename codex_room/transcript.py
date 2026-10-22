@@ -11,11 +11,10 @@ from rich.syntax import Syntax
 from rich.text import Text
 from rich.theme import Theme
 
-from .colors import member_colors
+from .colors import CODE_BACKGROUND, FOREGROUND, LINK, MUTED, member_colors
 from .tool_details import command_title, render_tool_group, tool_summary
 
 
-MUTED = "#788294"
 FAILED = {"failed", "declined"}
 
 
@@ -33,17 +32,14 @@ def format_duration(seconds: float) -> str:
 
 
 MARKDOWN_THEME = Theme({
-    "markdown.code": "#78d8bc on #2a3128",
-    "markdown.h1": "bold #a9b6ff",
-    "markdown.h2": "bold #a9b6ff",
-    "markdown.h3": "bold #c5cdd9",
-    "markdown.h4": "bold #c5cdd9",
-    "markdown.h5": "bold #c5cdd9",
-    "markdown.h6": "bold #788294",
-    "markdown.block_quote": "#788294",
-    "markdown.link_url": "underline #83c8e8",
-    "markdown.table.border": "#788294",
-    "markdown.table.header": "bold #c5cdd9",
+    "markdown.code": f"{FOREGROUND} on {CODE_BACKGROUND}",
+    **{f"markdown.h{level}": f"bold {FOREGROUND}" for level in range(1, 7)},
+    "markdown.block_quote": MUTED,
+    "markdown.link": f"underline {LINK}",
+    "markdown.link_url": f"underline {LINK}",
+    "markdown.item.number": FOREGROUND,
+    "markdown.table.border": MUTED,
+    "markdown.table.header": f"bold {FOREGROUND}",
 })
 
 
@@ -71,18 +67,15 @@ class ReplyMarkdown(Markdown):
 
     def __init__(self, text: str, color: str | None = None) -> None:
         self.reply_theme = MARKDOWN_THEME
-        self.code_background = "#262d24"
-        text_color = "#c5cdd9"
+        self.code_background = CODE_BACKGROUND
+        text_color = FOREGROUND
         if color:
             colors = member_colors(color)
             text_color = colors.text
             self.code_background = colors.code_background
             self.reply_theme = Theme({**MARKDOWN_THEME.styles,
-                **{f"markdown.h{level}": f"bold {colors.accent}" for level in range(1, 7)},
                 "markdown.code": f"{colors.text} on {colors.code_background}",
                 "markdown.block_quote": colors.muted,
-                "markdown.link_url": f"underline {colors.accent}",
-                "markdown.item.number": colors.accent,
                 "markdown.table.border": colors.muted,
                 "markdown.table.header": f"bold {colors.text}",
             })

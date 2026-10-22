@@ -286,3 +286,48 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
                 app.post_message(event_type(None, x, y, 0, 0, 0, False, False, False, screen_x=x, screen_y=y))
                 await pilot.pause()
                 self.assertEqual(timeline.scroll_y, expected)
+
+    async def test_drag_and_animation_do_not_repaint_or_reflow_the_whole_screen(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 36)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("a", "A first line for selecting.\n\nAnother line for selecting."))
+            await pilot.pause()
+            screen = app.screen
+            with patch.object(screen._compositor, "render_full_update",
+                              wraps=screen._compositor.render_full_update) as full:
+                await pilot.mouse_down(card.body, offset=(2, 0))
+                await pilot.hover(card.body, offset=(8, 0))
+                await pilot.hover(card.body, offset=(12, 2))
+                await pilot.mouse_up(card.body, offset=(12, 2))
+                self.assertIn("first line", screen.get_selected_text())
+                self.assertEqual(full.call_count, 0)
+
+            await pilot.press("escape")
+            answer = Entry("a", "Running.", state="working")
+            app.agents["a"].busy = True
+            await app.add_entry(answer)
+            app.active_entries["a"] = (Entry("you", "work", target="a"), answer)
+            app.refresh_chrome()
+            await pilot.pause()
+            with patch.object(screen, "_refresh_layout", wraps=screen._refresh_layout) as layout:
+                app.tick()
+                await pilot.pause()
+                app.tick()
+                await pilot.pause()
+                self.assertEqual(layout.call_count, 0)
+
+    async def test_moving_one_endpoint_only_dirties_that_line(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 36)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("a", "\n\n".join(f"paragraph {i}" for i in range(50))))
+            await pilot.pause()
+            body = card.body
+            original = Selection(Offset(0, 0), Offset(4, 20))
+            app.screen.selections = {body: original}
+            await pilot.pause()
+            with patch.object(body, "refresh", wraps=body.refresh) as refresh:
+                body.selection_updated(Selection(Offset(0, 0), Offset(6, 20)))
+                regions = refresh.call_args.args
+                self.assertEqual(regions, (Region(0, 20, body.size.width, 1),))

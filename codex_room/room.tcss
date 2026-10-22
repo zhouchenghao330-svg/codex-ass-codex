@@ -1,6 +1,6 @@
 Screen {
-    background: #1d211e;
-    color: #d1d4cd;
+    background: #1e211f;
+    color: #dad8ce;
     min-width: 60;
 }
 Screen > .screen--selection { background: #e9dfb8; color: #20251f; }
@@ -12,16 +12,16 @@ Screen > .screen--selection { background: #e9dfb8; color: #20251f; }
     padding: 0 1 0 0;
     scrollbar-size: 1 1;
     scrollbar-color: #454c43;
-    scrollbar-background: #1d211e;
+    scrollbar-background: #1e211f;
 }
 .message { height: auto; margin: 0 0 1 0; padding: 0; }
-.message.you { background: #30372f; padding: 0 1; }
+.message.you { background: #2d322d; padding: 0 1; }
 .message.agent { padding: 0 1; }
 .message.system { color: #788274; }
 .message-header, .message-body { height: auto; }
 .message.agent > .message-header { height: 1; }
-.working-status { height: 1; color: #788294; }
-.work-summary { height: 1; margin-top: 1; color: #788294; }
+.working-status { height: 1; color: #93988e; }
+.work-summary { height: 1; margin-top: 1; color: #93988e; }
 
 #completion-list {
     display: none;
@@ -43,7 +43,7 @@ Screen > .screen--selection { background: #e9dfb8; color: #20251f; }
 
 #composer {
     height: 3;
-    background: #343b32;
+    background: #2d322d;
     padding: 1 1;
     margin: 1 0 0 0;
 }
@@ -51,14 +51,14 @@ Screen > .screen--selection { background: #e9dfb8; color: #20251f; }
 #message-input {
     width: 1fr; height: 1;
     padding: 0; border: none;
-    background: transparent; color: #edf1e7;
+    background: transparent; color: #dad8ce;
     scrollbar-size: 1 1;
     overflow-x: hidden;
     scrollbar-color: #657359;
-    scrollbar-background: #343b32;
+    scrollbar-background: #2d322d;
 }
 #message-input:focus { border: none; background: transparent; }
-#message-input .text-area--placeholder { color: #879080; }
+#message-input .text-area--placeholder { color: #93988e; }
 #message-input .text-area--selection { background: #e9dfb8; color: #20251f; }
 #footer { height: 1; color: #919988; }
 #recipient { width: 1fr; height: 1; }

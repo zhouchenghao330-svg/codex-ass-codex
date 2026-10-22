@@ -10,7 +10,13 @@ from functools import lru_cache
 from rich.color import Color
 
 
-# Keep the original first five colors so existing rooms retain their appearance.
+BACKGROUND = "#1e211f"
+FOREGROUND = "#dad8ce"
+CODE_BACKGROUND = "#282c28"
+MUTED = "#93988e"
+LINK = "#94b9e3"
+
+# Keep the original first five colors so existing rooms retain their identity.
 COLOR_CHOICES = (
     ("purple", "紫色", "#a9b6ff"),
     ("mint", "薄荷绿", "#78d8bc"),
@@ -77,12 +83,10 @@ class MemberColors:
 
 @lru_cache(maxsize=256)
 def member_colors(color: str) -> MemberColors:
-    # Lift dark custom colors so labels and prose remain readable on the dark UI.
+    # Lift dark custom colors so identity markers remain readable on the dark UI.
     accent = normalize_color(color)
     rgb = [int(accent[i:i+2], 16) / 255 for i in (1, 3, 5)]
     hue, lightness, saturation = colorsys.rgb_to_hls(*rgb)
     if lightness < 0.65:
         accent = "#" + "".join(f"{round(channel * 255):02x}" for channel in colorsys.hls_to_rgb(hue, 0.72, saturation))
-    background = mix("#151917", accent, 0.16)
-    return MemberColors(accent, mix(accent, "#eef0e9", 0.25), background,
-                        mix(background, "#000000", 0.14), mix(accent, "#788294", 0.55))
+    return MemberColors(accent, FOREGROUND, BACKGROUND, CODE_BACKGROUND, MUTED)

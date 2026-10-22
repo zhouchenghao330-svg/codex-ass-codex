@@ -8,10 +8,12 @@ from rich.segment import Segment
 from rich.style import Style as RichStyle
 from textual import events
 from textual.geometry import Offset, Region
+from textual.reactive import var
 from textual.screen import Screen
 from textual.selection import Selection, SelectState
 from textual.strip import Strip
 from textual.visual import RichVisual, Visual
+from textual.widget import Widget
 from textual.widgets import Static
 from .rendering import CachedVisual, ReplyVisual
 
@@ -118,13 +120,21 @@ class SelectableStatic(Static):
             # selected rows need not have the same y as their displayed rows.
             super().selection_updated(selection)
             return
-        regions = []
+        boundaries = {0, self.size.height}
         for selected in (previous, selection):
             if selected is None:
                 continue
-            first = max(0, selected.start.y) if selected.start is not None else 0
-            last = min(self.size.height, selected.end.y + 1) if selected.end is not None else self.size.height
-            if last > first:
+            for offset in selected:
+                if offset is not None:
+                    boundaries.update(max(0, min(self.size.height, y)) for y in (offset.y, offset.y + 1))
+        boundaries = sorted(boundaries)
+        regions = []
+        # Spans are constant between their start/end rows. A small endpoint
+        # movement should not dirty the unchanged middle of a long selection.
+        for first, last in zip(boundaries, boundaries[1:]):
+            before = previous.get_span(first) if previous is not None else None
+            after = selection.get_span(first) if selection is not None else None
+            if before != after:
                 regions.append(Region(0, first, self.size.width, last - first))
         if regions:
             self.refresh(*regions)
@@ -202,6 +212,13 @@ class SelectableStatic(Static):
 class ConversationScreen(Screen):
     """Use character boundaries for dragging, and clear on an outside press."""
 
+    # Screen's default reactive repaints the entire terminal for every pointer
+    # movement. The selection watcher already refreshes the affected text rows.
+    _select_state: var[SelectState | None] = var(None)
+    # Focus styles and cursor visibility already repaint their own widgets.
+    # Moving focus out of the composer must not redraw the whole transcript.
+    focused: var[Widget | None] = var(None)
+
     def get_widget_and_offset_at(self, x: int, y: int):
         widget, offset = super().get_widget_and_offset_at(x, y)
         if isinstance(widget, SelectableStatic):
@@ -242,6 +259,9 @@ class ConversationScreen(Screen):
         super()._forward_event(event)
 
     def _watch__select_state(self, state: SelectState | None) -> None:
+        if state is None:
+            self._selecting = False
+            return
         if (state is not None and state.end is not None
                 and state.is_single_content_widget and state.is_attached_to_dom()):
             self._selecting = True

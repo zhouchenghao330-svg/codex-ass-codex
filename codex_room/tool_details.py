@@ -12,10 +12,11 @@ from rich.text import Text
 from rich.cells import cell_len
 from rich.syntax import Syntax
 
+from .colors import FOREGROUND, MUTED
+
 if TYPE_CHECKING:
     from .transcript import ReplyBlock
 
-MUTED = "#788294"
 GREEN = "#78d8bc"
 RED = "#e8a0a0"
 FAILED = {"failed", "decline", "declined"}
@@ -35,7 +36,7 @@ def command_title(command: str) -> str:
 def shell_text(command: str) -> Text:
     text = Syntax("", "bash", theme="ansi_dark").highlight(command)
     text.rstrip()
-    text.style = "#c5cdd9"
+    text.style = FOREGROUND
     text.highlight_regex(r"(?<!\w)--?[A-Za-z][A-Za-z0-9_-]*", style="#e8b878")
     text.highlight_regex(r"(?:^|[;|&]\s*)[A-Za-z_][\w-]*", style="#83c8e8")
     return text
