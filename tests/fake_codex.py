@@ -31,7 +31,17 @@ async def finish(thread, turn, text, params):
     global sequence
     try:
         markdown = text == "markdown"
-        if text == "steer-hold":
+        stream_prefix = ""
+        if text in {"steer-stream", "steer-complete"}:
+            stream_prefix = "BEFORE_FOLLOWUP\n"
+            send({"method": "item/agentMessage/delta", "params": {"threadId": thread, "turnId": turn, "itemId": "message-1", "delta": stream_prefix}})
+            send({"method": "item/started", "params": {"threadId": thread, "turnId": turn, "item": {
+                "id": "early-command", "type": "commandExecution", "command": "pwd", "status": "inProgress"}}})
+            await steer_ready[turn].wait()
+            send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn, "item": {
+                "id": "early-command", "type": "commandExecution", "command": "pwd", "status": "completed",
+                "aggregatedOutput": "OUTPUT_AFTER_FOLLOWUP", "exitCode": 0}}})
+        elif text == "steer-hold":
             await steer_ready[turn].wait()
         elif text == "slow":
             await asyncio.sleep(30)
@@ -128,9 +138,10 @@ async def finish(thread, turn, text, params):
                 "> 引用内容\n\n[文档](https://example.com/docs)\n\n"
                 "```python\nprint(\"**literal**\")\n```\n\n"
                 "| 模型 | 状态 |\n| --- | --- |\n| test | ready |") if markdown else f"{thread}: {text}"
-        for chunk in (body[:4], body[4:]):
-            send({"method": "item/agentMessage/delta", "params": {"threadId": thread, "turnId": turn, "itemId": "message-1", "delta": chunk}})
-        send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn, "item": {"type": "agentMessage", "id": "message-1", "text": body}}})
+        if not text.startswith("steer-complete"):
+            for chunk in (body[:4], body[4:]):
+                send({"method": "item/agentMessage/delta", "params": {"threadId": thread, "turnId": turn, "itemId": "message-1", "delta": chunk}})
+        send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn, "item": {"type": "agentMessage", "id": "message-1", "text": stream_prefix + body}}})
         send({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}})
     except asyncio.CancelledError:
         send({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": turn, "status": "interrupted"}}})

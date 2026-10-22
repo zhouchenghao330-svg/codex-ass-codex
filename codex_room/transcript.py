@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from uuid import uuid4
 
 from rich.console import Group
 from rich.markdown import CodeBlock, Heading, Markdown
@@ -111,6 +112,11 @@ class Entry:
     display_body: str | None = None
     attachments: list[Attachment] = field(default_factory=list)
     collapsed: bool = False
+    id: str = field(default_factory=lambda: uuid4().hex)
+    run_id: str = ""
+    batch_id: str = ""
+    quote: dict | None = None
+    recipients: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.blocks = [ReplyBlock(**block) if isinstance(block, dict) else block for block in self.blocks]
@@ -118,7 +124,18 @@ class Entry:
 
     @property
     def image_paths(self) -> list[str]:
-        return [item.content for item in self.attachments if item.kind == "image"]
+        paths = [item.content for item in self.attachments if item.kind == "image"]
+        if self.quote:
+            from .forwarding import ForwardQuote
+            paths.extend(ForwardQuote.load(self.quote).images)
+        return list(dict.fromkeys(paths))
+
+    @property
+    def input_text(self) -> str:
+        if not self.quote:
+            return self.body
+        from .forwarding import ForwardQuote
+        return ForwardQuote.load(self.quote).with_instruction(self.body)
 
     def sync_body(self) -> None:
         self.body = "\n\n".join(block.text for block in self.blocks if block.kind == "text" and block.text)
@@ -170,6 +187,7 @@ def render_reply(entry: Entry, expanded: bool, width: int, color: str | None = N
     if not entry.blocks:
         return Group(ReplyMarkdown(entry.body or "正在整理思路…", color))
     rendered = []
+    sources = []
     index = 0
     while index < len(entry.blocks):
         block = entry.blocks[index]
@@ -177,7 +195,10 @@ def render_reply(entry: Entry, expanded: bool, width: int, color: str | None = N
             if block.text:
                 if rendered:
                     rendered.append(Text(""))
-                rendered.append(ReplyMarkdown(block.text, color))
+                    sources.append(())
+                prose = ReplyMarkdown(block.text, color)
+                rendered.append(prose)
+                sources.append((index,))
             index += 1
             continue
         group = []
@@ -187,6 +208,12 @@ def render_reply(entry: Entry, expanded: bool, width: int, color: str | None = N
             index += 1
         if rendered:
             rendered.append(Text(""))
+            sources.append(())
         level = (group_levels or {}).get(start, 2 if expanded else 0)
-        rendered.extend(render_tool_group(group, start, level, width, expanded_items or {}, interactive))
-    return Group(*rendered)
+        tool_sources = []
+        tools = list(render_tool_group(group, start, level, width, expanded_items or {}, interactive, tool_sources))
+        rendered.extend(tools)
+        sources.extend(tool_sources)
+    group = Group(*rendered)
+    group.room_sources = sources
+    return group

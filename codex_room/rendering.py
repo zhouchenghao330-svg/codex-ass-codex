@@ -31,11 +31,12 @@ class CachedVisual(Visual):
 
 
 class ReplyVisual(Visual):
-    def __init__(self, widget, renderables, previous: dict) -> None:
+    def __init__(self, widget, renderables, previous: dict, sources=()) -> None:
         self.nodes = {}
         self.visuals = []
+        self.parts = []
         self._strips = None
-        for item in renderables:
+        for index, item in enumerate(renderables):
             if isinstance(item, Text):
                 key = ("text", item.plain, item.style, tuple(item.spans))
             elif isinstance(item, Markdown):
@@ -47,6 +48,7 @@ class ReplyVisual(Visual):
                 visual = CachedVisual(visualize(widget, item, markup=False))
             self.nodes[key] = visual
             self.visuals.append(visual)
+            self.parts.append((sources[index] if index < len(sources) else (), visual))
 
     def get_optimal_width(self, rules, container_width):
         return max((visual.get_optimal_width(rules, container_width) for visual in self.visuals), default=0)

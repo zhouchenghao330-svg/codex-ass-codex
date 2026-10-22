@@ -10,6 +10,7 @@ from typing import Mapping
 
 from .colors import COLOR_CHOICES, normalize_color
 from .platform_support import WINDOWS
+from .member_config import resolve_member
 
 
 COMMANDS = (
@@ -17,6 +18,7 @@ COMMANDS = (
     ("/focus", "切到成员的单人对话 · 名字"),
     ("/stop", "停止成员并取消尚未发出的消息 · 名字"),
     ("/del", "移除成员，先归档会话记录 · 名字"),
+    ("/rename", "重命名成员，保留会话 · [原名] 新名"),
     ("/model", "选择模型 · [模型] [推理强度]"),
     ("/permissions", "选择权限 · [full / workspace / read-only]"),
     ("/members", "展开 / 收起成员列表"),
@@ -150,14 +152,17 @@ class CompletionEngine:
         kind = ""
         candidates = []
 
-        if not before and query.startswith("@"):
+        mentions = [word for word in before if word.startswith("@")]
+        leading_mentions = len(mentions) == len(before) and all(resolve_member(word, agents) for word in mentions)
+        if leading_mentions and query.startswith("@"):
             kind = "mention"
-            candidates = [Candidate("@" + name, member=name) for name, agent in agents.items()
-                          if name.casefold().startswith(query[1:].casefold()) or agent.label.casefold().startswith(query[1:].casefold())]
+            chosen = {resolve_member(word, agents) for word in mentions}
+            candidates = [Candidate("@" + agent.label, member=name) for name, agent in agents.items()
+                          if name not in chosen and (name.casefold().startswith(query[1:].casefold()) or agent.label.casefold().startswith(query[1:].casefold()))]
         else:
             # Commands may also follow an explicit @recipient. Prose is untouched.
             if before and before[0].startswith("@"):
-                if before[0][1:].lower() not in agents:
+                if not resolve_member(before[0], agents):
                     return None
                 before = before[1:]
             if not before and query.startswith("/"):
@@ -169,10 +174,11 @@ class CompletionEngine:
             elif before:
                 command, *arguments = before
                 command = ALIASES.get(command.lower(), command.lower())
-                if command in {"/focus", "/stop", "/del"} and not arguments:
+                if command in {"/focus", "/stop", "/del", "/rename"} and not arguments:
                     kind = "member"
-                    candidates = [Candidate(("@" if query.startswith("@") else "") + name, member=name)
-                                  for name in agents if name.startswith(query.lstrip("@").lower())]
+                    candidates = [Candidate(("@" if query.startswith("@") else "") + agent.label, member=name)
+                                  for name, agent in agents.items() if name.startswith(query.lstrip("@").casefold())
+                                  or agent.label.casefold().startswith(query.lstrip("@").casefold())]
                 elif command == "/permissions" and not arguments:
                     kind = "permission"
                     candidates = [Candidate(value, detail) for value, detail in PERMISSIONS if value.startswith(query.lower())]

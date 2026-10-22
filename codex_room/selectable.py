@@ -332,6 +332,9 @@ class ConversationScreen(Screen):
     def _forward_event(self, event: events.Event) -> None:
         if not event.is_forwarded:
             if isinstance(event, events.MouseDown) and event.button == 1:
+                widget, _ = super().get_widget_and_offset_at(event.screen_x, event.screen_y)
+                if widget is not None and any(node.id == "forward-selection" for node in widget.ancestors_with_self):
+                    self.app.prepare_forward_selection()
                 self._drag_timeline = None
                 self._selection_press = None
                 if self.selections:

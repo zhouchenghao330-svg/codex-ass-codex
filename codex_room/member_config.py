@@ -3,9 +3,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from .colors import normalize_color
 from .platform_support import split_arguments
+
+
+def validate_name(value: str, agents, *, excluding: str = "") -> str:
+    name = value.strip().lstrip("@")
+    if not re.fullmatch(r"[^\W\d_][\w-]{0,31}", name):
+        raise ValueError("名字以中文或字母开头，可包含数字、_ 和 -，最多 32 字。")
+    if name.casefold() in {"all", "you", "system"} or any(
+        key != excluding and name.casefold() in {key.casefold(), agent.label.casefold()}
+        for key, agent in agents.items()
+    ):
+        raise ValueError("这个名字已经被占用，换一个试试。")
+    return name
+
+
+def resolve_member(value: str, agents) -> str:
+    query = value.lstrip("@").casefold()
+    return next((key for key, agent in agents.items() if agent.label.casefold() == query),
+                next((key for key in agents if key.casefold() == query), ""))
 
 
 @dataclass(frozen=True)
@@ -71,4 +90,4 @@ def parse_add(value: str, base: Path) -> AddOptions | None:
                 pass
             else:
                 color, cwd = cwd, None
-    return AddOptions(name.lstrip("@").lower(), cwd, color)
+    return AddOptions(name.lstrip("@"), cwd, color)

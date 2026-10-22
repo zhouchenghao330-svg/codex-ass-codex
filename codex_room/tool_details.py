@@ -223,8 +223,13 @@ def preview_value(value) -> str:
 
 
 def render_tool_group(blocks: list[ReplyBlock], start: int, level: int, width: int,
-                      expanded_items: dict[tuple[int, int], bool], interactive: bool):
-    yield tool_summary(blocks, level == 2, width, level=level, group_index=start, interactive=interactive)
+                      expanded_items: dict[tuple[int, int], bool], interactive: bool, sources: list | None = None):
+    def tracked(item, indices):
+        if sources is not None:
+            sources.append(indices)
+        return item
+    yield tracked(tool_summary(blocks, level == 2, width, level=level, group_index=start, interactive=interactive),
+                  tuple(range(start, start + len(blocks))))
     if not level:
         return
     for index, block in enumerate(blocks, start):
@@ -247,21 +252,21 @@ def render_tool_group(blocks: list[ReplyBlock], start: int, level: int, width: i
             title.append(f" · {status_text(block)}", style=style)
             if block.kind != "command":
                 title.truncate(max(4, width), overflow="ellipsis")
-            yield title
+            yield tracked(title, (index,))
             if expanded:
                 if change:
-                    yield Text((f"{change.previous} → " if change.previous else "") + change.path + f"  ({counts(change)})", style=MUTED)
-                    yield diff_text(change)
+                    yield tracked(Text((f"{change.previous} → " if change.previous else "") + change.path + f"  ({counts(change)})", style=MUTED), (index,))
+                    yield tracked(diff_text(change), (index,))
                 elif block.kind == "command":
                     command = Text("$ ", style=MUTED)
                     command.append_text(shell_text(block.title).copy())
-                    yield command
+                    yield tracked(command, (index,))
                     if block.text:
-                        yield Text(block.text.rstrip(), style=MUTED)
+                        yield tracked(Text(block.text.rstrip(), style=MUTED), (index,))
                     if block.exit_code is not None:
-                        yield Text(f"[退出码 {block.exit_code}]", style=MUTED)
+                        yield tracked(Text(f"[退出码 {block.exit_code}]", style=MUTED), (index,))
                 else:
-                    yield tool_content(block)
+                    yield tracked(tool_content(block), (index,))
             elif not change:
                 previews = []
                 if block.kind == "command" and block.text:
@@ -274,4 +279,4 @@ def render_tool_group(blocks: list[ReplyBlock], start: int, level: int, width: i
                 for title, value in previews:
                     line = Text(f"    {title}：" + preview_value(value), style=MUTED, no_wrap=True)
                     line.truncate(max(4, width), overflow="ellipsis")
-                    yield line
+                    yield tracked(line, (index,))

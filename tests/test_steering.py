@@ -23,6 +23,43 @@ async def wait_until(predicate, pilot):
 
 
 class SteeringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_output_stays_before_followup_and_continued_stream_is_not_duplicated(self):
+        await self.check_followup_position("steer-stream")
+
+    async def test_completion_without_deltas_still_places_new_text_after_followup(self):
+        await self.check_followup_position("steer-complete")
+
+    async def check_followup_position(self, initial):
+        with tempfile.TemporaryDirectory() as tmp, patch("codex_room.app.CodexClient", client):
+            app = CodexRoom(cwd=ROOT, state_dir=Path(tmp))
+            async with app.run_test(size=(120, 40)) as pilot:
+                await app.connection_task
+                await app.create_member("a")
+                await app.submit("@a " + initial)
+                await wait_until(lambda: any(entry.sender == "a" and entry.blocks and len(entry.blocks) == 2
+                                             for entry in app.entries), pilot)
+                before = app.active_entries["a"][1]
+                await app.submit("@a supplemental instruction")
+                followup = next(entry for entry in app.entries if entry.body == "supplemental instruction")
+                self.assertLess(app.entries.index(before), app.entries.index(followup))
+                await app.submit("@a finish-steer")
+                await app.tasks["a"]
+                segments = [entry for entry in app.entries if entry.sender == "a"]
+                self.assertEqual(len(segments), 2)
+                self.assertEqual(segments[0].body, "BEFORE_FOLLOWUP\n")
+                self.assertEqual(segments[0].blocks[1].text, "OUTPUT_AFTER_FOLLOWUP")
+                self.assertEqual(segments[0].blocks[1].status, "completed")
+                self.assertLess(app.entries.index(followup), app.entries.index(segments[1]))
+                self.assertIn("supplemental instruction", segments[1].body)
+                self.assertNotIn("BEFORE_FOLLOWUP", segments[1].body)
+                self.assertEqual(len({entry.run_id for entry in segments}), 1)
+                self.assertEqual(segments[0].state, "continued")
+                self.assertEqual(segments[1].state, "done")
+                self.assertIsNone(segments[0].finished_at)
+                self.assertIsNotNone(segments[1].finished_at)
+                self.assertEqual([app.cards[id(entry)].entry.id for entry in app.entries],
+                                 [card.entry.id for card in app.query_one("#timeline").children if hasattr(card, "entry")])
+
     async def test_followups_share_one_turn_and_late_ack_does_not_duplicate_work(self):
         with tempfile.TemporaryDirectory() as tmp, patch("codex_room.app.CodexClient", client):
             app = CodexRoom(cwd=ROOT, state_dir=Path(tmp))
@@ -44,9 +81,9 @@ class SteeringTests(unittest.IsolatedAsyncioTestCase):
                     answer = next(entry for entry in app.entries if entry.sender == "a")
                     inputs = [entry for entry in app.entries if entry.sender == "you" and entry.target == "a"]
                     self.assertEqual([entry.state for entry in inputs], ["done", "steered", "steered"])
-                    self.assertGreater(app.entries.index(answer), app.entries.index(inputs[-1]))
+                    self.assertLess(app.entries.index(answer), app.entries.index(inputs[-1]))
                     timeline = app.query_one("#timeline")
-                    self.assertGreater(list(timeline.children).index(app.cards[id(answer)]),
+                    self.assertLess(list(timeline.children).index(app.cards[id(answer)]),
                                        list(timeline.children).index(app.cards[id(inputs[-1])]))
                     # The completion notification arrives before the steer RPC acknowledgment.
                     await app.submit("@a finish-and-ack")

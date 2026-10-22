@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
+from uuid import uuid4
 
 from rich.cells import cell_len
 from rich.console import Group
@@ -30,12 +31,13 @@ from .settings import ModelSettings, PermissionSettings, RuntimeApproval, Runtim
 from .storage import RoomStore
 from .transcript import Entry, ReplyBlock, format_duration, render_reply
 from .colors import COLOR_CHOICES, FOREGROUND, MUTED, choose_color, member_colors, normalize_color
-from .member_config import parse_add, resolve_directory
+from .member_config import parse_add, resolve_directory, resolve_member, validate_name
 from .completion import Completion, CompletionEngine, is_room_command
 from .selectable import ConversationScreen, SelectableStatic
 from .composer import ComposerInput
 from .attachments import Attachment, Prompt
 from .rendering import ReplyVisual
+from .forwarding import ForwardQuote, RecipientPicker, QuotePreview, capture_selection
 
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -115,7 +117,7 @@ class Member(Static):
         color = "#e8b878" if agent.busy else "#78d8bc"
         text = Text()
         text.append(f"{'▸' if selected else ' '} {agent.label}", style=f"bold {agent.accent}")
-        text.append(f"  @{agent.name}\n", style=MUTED)
+        text.append("\n")
         text.append(f"  {status}", style=color)
         if agent.queue:
             text.append(f"  +{len(agent.queue)} 待发送", style="#e8b878")
@@ -138,7 +140,7 @@ class ReplyBody(SelectableStatic):
 
     def update(self, content="", *, layout=True) -> None:
         if isinstance(content, Group):
-            visual = ReplyVisual(self, content.renderables, self._render_nodes)
+            visual = ReplyVisual(self, content.renderables, self._render_nodes, getattr(content, "room_sources", ()))
             self._render_nodes = visual.nodes
             content = visual
         super().update(content, layout=layout)
@@ -156,6 +158,9 @@ class ReplyBody(SelectableStatic):
 class ReplyHeader(SelectableStatic):
     def action_toggle_reply(self) -> None:
         self.parent.toggle_reply()
+
+    def action_show_quote(self) -> None:
+        self.app.push_screen(QuotePreview(ForwardQuote.load(self.parent.entry.quote)))
 
 
 class MessageCard(Vertical):
@@ -180,10 +185,12 @@ class MessageCard(Vertical):
         self.body = ReplyBody(classes="message-body")
         self.progress = SelectableStatic(classes="working-status")
         self.work_summary = SelectableStatic(classes="work-summary")
+        self.quote_header = ReplyHeader(classes="quote-header")
         self.refresh_entry()
 
     def compose(self) -> ComposeResult:
         yield self.header
+        yield self.quote_header
         yield self.preview
         yield self.body
         yield self.progress
@@ -265,6 +272,12 @@ class MessageCard(Vertical):
 
     def refresh_entry(self) -> None:
         entry = self.entry
+        self.quote_header.display = bool(entry.quote)
+        if entry.quote:
+            quote = ForwardQuote.load(entry.quote)
+            label = Text(f"↳ {quote.title} · 点击查看", style=MUTED)
+            label.stylize(RichStyle(meta={"@click": "show_quote"}))
+            update_text(self.quote_header, label)
         text = Text()
         if entry.sender == "system":
             text.append("◇  ", style="#788294")
@@ -272,14 +285,16 @@ class MessageCard(Vertical):
         else:
             if entry.sender == "you":
                 text.append("› ", style="bold #e8edf5")
-                target = self.agents[entry.target]
-                text.append(f"@{target.name}", style=target.accent)
+                recipients = [name for name in entry.recipients if name in self.agents] or [entry.target]
+                for index, name in enumerate(recipients):
+                    target = self.agents[name]
+                    text.append((" " if index else "") + f"@{target.label}", style=target.accent)
             else:
                 agent = self.agents[entry.sender]
                 text.append("▸ " if entry.collapsed else "▾ ",
                             style=RichStyle(color=MUTED, meta={"@click": "toggle_reply"}))
                 text.append(agent.label, style=f"bold {self.reply_colors.accent}")
-                text.append(f"  @{agent.name}", style=self.reply_colors.muted)
+                text.append(f"  @{agent.label}", style=self.reply_colors.muted)
             if entry.state == "queued":
                 text.append("   ◷ 发送中", style="#e8b878")
             elif entry.state == "steered":
@@ -331,7 +346,7 @@ class AddMember(ModalScreen[tuple[str, str, str] | None]):
             yield Static("[b]拉一个 Codex 进来[/b]", id="dialog-title")
             yield Static("独立会话，从你发给它的第一条消息开始。", classes="muted")
             yield Static("名字 · 用于 @ 点名", classes="field-label")
-            yield Input(placeholder="例如 a 或 codex1", id="new-name", max_length=20)
+            yield Input(placeholder="例如 开发笔记 或 a", id="new-name", max_length=32)
             yield Static("工作目录 · 留空沿用群聊目录", classes="field-label")
             yield Input(placeholder=str(self.app.cwd), id="new-cwd")
             yield Static("颜色 · 只显示未占用的颜色", classes="field-label")
@@ -373,19 +388,18 @@ class AddMember(ModalScreen[tuple[str, str, str] | None]):
 
     def confirm(self) -> None:
         name = self.query_one("#new-name", Input).value.strip()
-        if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,19}", name):
-            self.query_one("#dialog-error", Static).update("请用英文字母开头，可包含数字、_ 和 -。")
-            return
         app = self.app
-        if name.lower() in app.agents or name.lower() in {"all", "you", "system"}:
-            self.query_one("#dialog-error", Static).update("这个名字已经被占用，换一个试试。")
+        try:
+            name = validate_name(name, app.agents)
+        except ValueError as exc:
+            self.query_one("#dialog-error", Static).update(Text(str(exc)))
             return
         try:
             cwd = resolve_directory(self.query_one("#new-cwd", Input).value.strip(), app.cwd)
         except (ValueError, OSError) as exc:
             self.query_one("#dialog-error", Static).update(Text(str(exc)))
             return
-        self.dismiss((name.lower(), str(self.query_one("#new-color", Select).value), str(cwd)))
+        self.dismiss((name, str(self.query_one("#new-color", Select).value), str(cwd)))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.confirm()
@@ -405,6 +419,7 @@ class Help(ModalScreen[None]):
             yield Static("[b]一个终端，几位 Codex。[/b]", id="dialog-title")
             yield Static(
                 "[b #a9b6ff]@a 你的消息[/]       发给指定成员\n"
+                "[b #a9b6ff]@a @b 你的消息[/]    同时交给两人，各自独立处理\n"
                 "[b #a9b6ff]直接输入[/]           发给左侧选中的成员\n"
                 "[b #a9b6ff]/add 名字 [目录][/]    新建 Codex，省略目录则沿用群聊目录\n"
                 "[b #a9b6ff]--color blue[/]        创建时指定颜色\n"
@@ -412,6 +427,7 @@ class Help(ModalScreen[None]):
                 "[b #a9b6ff]/members[/]            展开 / 收起成员列表\n"
                 "[b #a9b6ff]/stop 名字[/]          停止回复，取消尚未发出的消息\n"
                 "[b #a9b6ff]/del 名字[/]           移除成员，会话记录先归档\n"
+                "[b #a9b6ff]/rename 原名 新名[/]   改名，保留原会话；支持中文\n"
                 "[b #a9b6ff]/model[/]              选择模型和推理强度\n"
                 "[b #a9b6ff]/permissions[/]        选择权限，默认 Full Access\n"
                 "[b #a9b6ff]@a /model[/]           调整指定成员的设置\n"
@@ -424,6 +440,9 @@ class Help(ModalScreen[None]):
                 "[b]/命令、成员、模型、权限、目录和颜色[/] 均支持补全\n"
                 "[b]Ctrl+B[/] 展开 / 收起成员\n"
                 "[b]Ctrl+T[/] 展开 / 收起工具调用详情\n"
+                "拖选对话后点击底部 [b]转发[/]，或按 [b]Ctrl+F[/]\n"
+                "选择现有成员或新建，补一句任务后发送；引用含折叠详情\n"
+                "[b]← 返回来源[/] 恢复原视图、位置和草稿\n"
                 "点击回复前的 [b]▾ / ▸[/] 收起 / 展开整条回复\n"
                 "长粘贴 / 图片显示为块，退格整块删除\n"
                 "[b]Alt+Enter[/] 展开光标处的长粘贴原文\n"
@@ -459,6 +478,7 @@ class CodexRoom(App):
         Binding("ctrl+b", "toggle_sidebar", "成员", priority=True),
         Binding("ctrl+l", "toggle_view", "全部 / 单人", priority=True),
         Binding("ctrl+t", "toggle_tools", "工具详情", priority=True),
+        Binding("ctrl+f", "forward_selection", "转发选区", priority=True),
         Binding("ctrl+1", "select_index(0)", "成员 1", priority=True, show=False),
         Binding("ctrl+2", "select_index(1)", "成员 2", priority=True, show=False),
         Binding("ctrl+3", "select_index(2)", "成员 3", priority=True, show=False),
@@ -489,9 +509,18 @@ class CodexRoom(App):
         self.completion_signature: tuple = ()
         self.dismissed_completion: tuple[str, int] | None = None
         self.entries: list[Entry] = []
+        self.batch_heads: dict[str, str] = {}
         self.cards: dict[int, MessageCard] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self.active_entries: dict[str, tuple[Entry, Entry]] = {}
+        self.reply_boundaries: set[str] = set()
+        self.forward_quote: ForwardQuote | None = None
+        self.forward_target = ""
+        self.forward_origin: dict | None = None
+        self.forward_drafts: dict[str, tuple[Prompt, ForwardQuote, dict | None]] = {}
+        self.forward_capture: tuple[ForwardQuote, dict] | None = None
+        self.pending_interactions: dict[str, tuple[ModalScreen, asyncio.Future]] = {}
+        self.showing_interactions: set[str] = set()
         self.frame = 0
         self.speed = speed
         self.demo = demo
@@ -546,11 +575,20 @@ class CodexRoom(App):
                 with VerticalScroll(id="timeline"):
                     yield Static("输入 /add 名字 或按 Ctrl+N 创建 Codex", id="empty-room", classes="muted")
                 yield CompletionList(id="completion-list")
+                with Horizontal(id="selection-actions"):
+                    yield Static("选中的对话", id="selection-label")
+                    yield Button("转发 · Ctrl+F", id="forward-selection")
+                with Horizontal(id="forward-context"):
+                    yield Button("", id="quote-preview")
+                    yield Button("整个选区", id="quote-scope")
+                    yield Button("× 移除引用", id="quote-remove")
+                yield Button("← 返回来源", id="forward-return")
                 with Horizontal(id="composer"):
                     yield Static("›", id="prompt")
                     yield ComposerInput(placeholder="说点什么，或 @名字…", id="message-input")
                 with Horizontal(id="footer"):
                     yield Button("› 成员", id="toggle-sidebar", tooltip="展开 / 收起成员列表 · Ctrl+B")
+                    yield Button("回复请求", id="respond-request")
                     yield Static("", id="recipient")
                     yield Static("F1 帮助", id="connection")
 
@@ -565,6 +603,8 @@ class CodexRoom(App):
                         entry.target = name
                         break
             entry.restore_legacy_tools()
+            if entry.state == "continued":
+                entry.finish_tools("stopped")
             if entry.state in {"working", "queued"}:
                 entry.state = "stopped"
                 entry.finish_tools("stopped")
@@ -645,6 +685,8 @@ class CodexRoom(App):
         if not self.is_running or self.shutting_down:
             return
         self.frame += 1
+        actions = self.room_screen.query_one("#selection-actions")
+        actions.display = bool(self.room_screen.selections or self.forward_capture) and not self.room_screen._selecting
         for _, answer in self.active_entries.values():
             card = self.cards.get(id(answer))
             if card and card.display:
@@ -758,17 +800,18 @@ class CodexRoom(App):
         self.room_screen.query_one("#empty-room", Static).display = not self.agents
         self.room_screen.query_one("#toggle-sidebar", Button).label = "‹ 收起" if self.sidebar_visible else "› 成员"
         self.refresh_recipient()
+        self.room_screen.query_one("#respond-request").display = self.selected in self.pending_interactions
         state = "演示" if self.demo else ("已连接" if self.connected else ("离线" if self.connection_error else "连接中"))
         update_text(self.room_screen.query_one("#connection", Static), f"F1 帮助 · {state}")
 
     def refresh_recipient(self) -> None:
         value = self.room_screen.query_one("#message-input", ComposerInput).value
         match = re.match(r"^@([\w-]+)(?:\s|$)", value)
-        name = match.group(1).lower() if match else self.selected
+        name = resolve_member(match.group(1), self.agents) if match else self.selected
         recipient = Text()
         if name in self.agents:
             agent = self.agents[name]
-            recipient.append(f"@{name}", style=agent.accent)
+            recipient.append(f"@{agent.label}", style=agent.accent)
             recipient.append(" · 追加到当前工作" if agent.busy else " · 空闲", style=MUTED)
             recipient.append(f" · ⌂ {Path(agent.cwd).name or agent.cwd}", style=MUTED)
             self.room_screen.query_one("#recipient", Static).tooltip = f"工作目录：{agent.cwd}"
@@ -781,16 +824,19 @@ class CodexRoom(App):
         else:
             recipient.append(f"未找到 @{name} · 可以先 /add {name}" if self.agents else "暂无 Codex · /add 名字 或 Ctrl+N 创建", style=MUTED)
         if self.room_screen.selections:
-            recipient = Text("Ctrl+C 复制选中文字 · Esc 取消", style=MUTED)
+            recipient = Text("Ctrl+C 复制 · Ctrl+F 转发选中对话 · Esc 取消", style=MUTED)
         elif self.completion_open:
             recipient = Text("↑↓ 选择 · Tab / Enter 补全 · Esc 关闭", style=MUTED)
         elif is_room_command(value):
             recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /del  /help", style=MUTED)
         update_text(self.room_screen.query_one("#recipient", Static), recipient)
-        self.room_screen.query_one("#message-input", ComposerInput).placeholder = f"给 @{self.selected} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
+        label = self.agents[self.selected].label if self.selected in self.agents else ""
+        self.room_screen.query_one("#message-input", ComposerInput).placeholder = f"给 @{label} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
 
     async def add_entry(self, entry: Entry) -> MessageCard:
         self.entries.append(entry)
+        if entry.sender == "you" and entry.batch_id:
+            self.batch_heads.setdefault(entry.batch_id, entry.id)
         self.dirty = True
         if entry.sender == "you":
             self.agents[entry.target].history.append(entry)
@@ -809,6 +855,8 @@ class CodexRoom(App):
         return card
 
     def entry_visible(self, entry: Entry) -> bool:
+        if self.show_all and entry.sender == "you" and entry.batch_id:
+            return self.batch_heads.get(entry.batch_id) == entry.id
         return (self.show_all or entry.sender == self.selected or entry.target == self.selected
                 or (entry.sender == "system" and not entry.target))
 
@@ -819,11 +867,21 @@ class CodexRoom(App):
         self.call_after_refresh(self.scroll_bottom)
 
     def select(self, name: str, *, single: bool = False) -> None:
+        if self.forward_quote and name != self.forward_target:
+            composer = self.room_screen.query_one("#message-input", ComposerInput)
+            self.forward_drafts[self.forward_target] = (composer.prompt, self.forward_quote, self.forward_origin)
+            self.forward_quote = None
+            composer.value = ""
         self.selected = name
         if single:
             self.show_all = False
         self.dirty = True
         self.apply_filter()
+        if single and name in self.forward_drafts and not self.forward_quote:
+            prompt, self.forward_quote, self.forward_origin = self.forward_drafts.pop(name)
+            self.forward_target = name
+            self.room_screen.query_one("#message-input", ComposerInput).load_prompt(prompt)
+        self.refresh_forward_context()
         self.set_timer(0.05, self.reveal_selected)
         if not isinstance(self.screen, ModalScreen):
             self.action_composer()
@@ -922,6 +980,96 @@ class CodexRoom(App):
         if not isinstance(self.screen, ModalScreen):
             self.push_screen(AddMember(), self.member_added)
 
+    def prepare_forward_selection(self) -> None:
+        quote = capture_selection(self.entries, self.cards, self.room_screen.selections, self.agents)
+        if quote:
+            composer = self.room_screen.query_one("#message-input", ComposerInput)
+            self.forward_capture = (quote, {"selected": self.selected, "show_all": self.show_all,
+                "scroll_y": self.room_screen.query_one("#timeline").scroll_y,
+                "prompt": composer.prompt, "cursor": composer.cursor_position})
+
+    def action_forward_selection(self) -> None:
+        if self.screen is not self.room_screen:
+            return
+        if self.forward_quote:
+            self.notify("先发送或移除当前引用，再开始另一份转发。")
+            self.forward_capture = None
+            return
+        if not self.forward_capture:
+            self.prepare_forward_selection()
+        if not self.forward_capture:
+            self.notify("先在对话区拖选需要转发的内容。")
+            return
+        self.close_completions()
+        self.push_screen(RecipientPicker(), self.forward_recipient_chosen)
+
+    def forward_recipient_chosen(self, name: str | None) -> None:
+        if not name:
+            self.forward_capture = None
+            return
+        if name == "+new":
+            self.push_screen(AddMember(), self.forward_member_added)
+        else:
+            self.open_forward_draft(name)
+
+    async def forward_member_added(self, result) -> None:
+        if result and await self.create_member(*result):
+            self.open_forward_draft(self.selected)
+        elif result:
+            # Keep the snapshot while correcting invalid input or a failed config read.
+            self.push_screen(RecipientPicker(), self.forward_recipient_chosen)
+        else:
+            self.push_screen(RecipientPicker(), self.forward_recipient_chosen)
+
+    def open_forward_draft(self, name: str) -> None:
+        if not self.forward_capture or name not in self.agents:
+            return
+        if name in self.forward_drafts:
+            self.notify("这个成员已有未发送的转发草稿，请先处理。")
+            self.forward_capture = None
+            return
+        self.forward_quote, self.forward_origin = self.forward_capture
+        self.forward_capture = None
+        self.room_screen.query_one("#selection-actions").display = False
+        self.forward_target = name
+        self.select(name, single=True)
+        composer = self.room_screen.query_one("#message-input", ComposerInput)
+        composer.value = ""
+        composer.focus()
+        self.refresh_forward_context()
+
+    def refresh_forward_context(self) -> None:
+        if not hasattr(self, "room_screen"):
+            return
+        bar = self.room_screen.query_one("#forward-context")
+        bar.display = self.forward_quote is not None
+        self.room_screen.query_one("#forward-return").display = self.forward_origin is not None
+        if self.forward_quote:
+            self.room_screen.query_one("#quote-preview", Button).label = "▸ " + self.forward_quote.title
+            scope = self.room_screen.query_one("#quote-scope", Button)
+            scope.display = self.forward_quote.mixed
+            scope.label = "仅与来源的对话" if self.forward_quote.scope == "all" else "整个选区"
+
+    def return_to_source(self) -> None:
+        if not self.forward_origin:
+            return
+        origin = self.forward_origin
+        composer = self.room_screen.query_one("#message-input", ComposerInput)
+        if self.forward_quote:
+            self.forward_drafts[self.forward_target] = (composer.prompt, self.forward_quote, self.forward_origin)
+            self.forward_quote = None
+        self.selected = origin["selected"] if origin["selected"] in self.agents else next(iter(self.agents), "")
+        self.show_all = origin["show_all"]
+        self.room_screen.clear_selection()
+        self.apply_filter()
+        composer.load_prompt(origin["prompt"])
+        composer.cursor_position = origin["cursor"]
+        composer.focus()
+        timeline = self.room_screen.query_one("#timeline")
+        self.call_after_refresh(lambda: timeline.scroll_to(y=origin["scroll_y"], animate=False, immediate=True))
+        self.forward_origin = None
+        self.refresh_forward_context()
+
     async def member_added(self, result: tuple[str, str, str] | None) -> None:
         if result:
             await self.create_member(*result)
@@ -944,9 +1092,11 @@ class CodexRoom(App):
     async def create_member(self, name: str, color: str | None = None,
                             cwd: str | Path | None = None) -> bool:
         try:
+            label = validate_name(name, self.agents)
+            name = label.lower() if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]*", label) else "member-" + uuid4().hex[:12]
             directory = resolve_directory(cwd, self.cwd)
             color = choose_color([agent.color for agent in self.agents.values()], color)
-            agent = Agent(name, name, color, cwd=str(directory))
+            agent = Agent(name, label, color, cwd=str(directory))
             await self.inherit_defaults(agent)
         except (ValueError, OSError, CodexError) as exc:
             self.notify(str(exc), severity="warning")
@@ -955,7 +1105,7 @@ class CodexRoom(App):
         member = Member(agent)
         await self.room_screen.query_one("#members", VerticalScroll).mount(member)
         self.select(name)
-        await self.add_entry(Entry("system", f"{name} 已加入 · 工作目录：{agent.cwd}", target=name))
+        await self.add_entry(Entry("system", f"{label} 已加入 · 工作目录：{agent.cwd}", target=name))
         self.save_state()
         return True
 
@@ -972,8 +1122,13 @@ class CodexRoom(App):
         value = prompt.text
         if not value:
             return
-        accepted = await self.submit(value, attachments=prompt.attachments)
+        quote = self.forward_quote
+        accepted = await self.submit(value, attachments=prompt.attachments, quote=quote)
         if accepted:
+            if quote:
+                self.forward_quote = None
+                self.forward_drafts.pop(self.forward_target, None)
+                self.refresh_forward_context()
             record = prompt.dump()
             if not self.input_history or self.input_history[-1] != record:
                 self.input_history.append(record)
@@ -985,51 +1140,96 @@ class CodexRoom(App):
         self.refresh_chrome()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "add-member":
+        if event.button.id == "respond-request" and self.selected in self.pending_interactions:
+            self.run_worker(self.show_interaction(self.selected))
+        elif event.button.id == "forward-selection":
+            self.action_forward_selection()
+        elif event.button.id == "quote-preview" and self.forward_quote:
+            self.push_screen(QuotePreview(self.forward_quote), lambda _: self.action_composer())
+        elif event.button.id == "quote-scope" and self.forward_quote:
+            self.forward_quote.scope = "all" if self.forward_quote.scope == "source" else "source"
+            self.refresh_forward_context()
+            self.action_composer()
+        elif event.button.id == "quote-remove":
+            self.forward_quote = None
+            self.forward_drafts.pop(self.forward_target, None)
+            self.refresh_forward_context()
+            self.action_composer()
+        elif event.button.id == "forward-return":
+            self.return_to_source()
+        elif event.button.id == "add-member":
             self.action_add_member()
         elif event.button.id == "all-messages":
             self.action_all_messages()
         elif event.button.id in {"toggle-sidebar", "close-sidebar"}:
             self.action_toggle_sidebar()
 
-    async def submit(self, value: str, *, attachments: list[Attachment] | None = None) -> bool:
+    async def submit(self, value: str, *, attachments: list[Attachment] | None = None,
+                     quote: ForwardQuote | None = None) -> bool:
         prompt = Prompt(value, attachments or [])
-        if not prompt.attachments and is_room_command(value):
+        if not quote and not prompt.attachments and is_room_command(value):
             return await self.command(value)
-        name, body = self.selected, value
+        names, body = [self.selected], value
         if value.startswith("@"):
-            match = re.match(r"^@([a-zA-Z0-9_-]+)\s+(.+)$", value, re.DOTALL)
-            if not match:
+            position = 0
+            names = []
+            while match := re.match(r"@([\w-]+)(?:\s+|$)", value[position:]):
+                token = match.group(1)
+                name = resolve_member(token, self.agents)
+                if not name:
+                    self.notify(f"没有 @{token}，请先创建或从补全列表选择。", severity="warning")
+                    return False
+                if name not in names:
+                    names.append(name)
+                position += match.end()
+            if not names or not value[position:].strip():
                 self.notify("写上 @名字 和要发送的内容。", severity="warning")
                 return False
-            name, body = match.group(1).lower(), match.group(2).strip()
-            prompt = prompt.slice(match.start(2)).strip()
-        if name not in self.agents:
-            self.notify(f"没有 @{name}，可以用 /add {name} 创建。" if name else "先用 /add 名字 或 Ctrl+N 创建 Codex。", severity="warning")
+            prompt = prompt.slice(position).strip()
+            body = prompt.text
+        if not names or any(name not in self.agents for name in names):
+            self.notify("先用 /add 名字 或 Ctrl+N 创建 Codex。", severity="warning")
             return False
-        if not prompt.attachments and is_room_command(body):
-            accepted = await self.command(body, target=name)
-            if accepted and name in self.agents:
-                self.select(name)
+        if quote and names != [self.forward_target]:
+            self.notify("这份转发草稿已有接收者，请在当前对话发送。", severity="warning")
+            return False
+        if not quote and not prompt.attachments and is_room_command(body):
+            if len(names) > 1:
+                self.notify("设置命令请只指定一个成员。", severity="warning")
+                return False
+            accepted = await self.command(body, target=names[0])
+            if accepted and names[0] in self.agents:
+                self.select(names[0])
             return accepted
         if not self.connected:
             self.notify("Codex 尚未连接；连接失败时可用 /reconnect 重试。", severity="warning")
             return False
-        if any(not Path(path).is_file() for path in prompt.images):
+        if any(not Path(path).is_file() for path in [*prompt.images, *(quote.images if quote else [])]):
             self.notify("图片文件已不存在，请重新粘贴；输入内容已保留。", severity="warning")
             return False
-        # Routing is explicit: mentioning another member later in a message is just text.
-        agent = self.agents[name]
-        entry = Entry("you", prompt.expand(), name, "queued" if agent.busy else "done",
-                      display_body=prompt.text if prompt.attachments else None, attachments=prompt.attachments)
-        await self.add_entry(entry)
-        agent.queue.append(entry)
-        if self.selected != name:
-            self.select(name)
-        if not agent.busy:
-            self.start_agent(name)
-        else:
-            await self.deliver_followups(name)
+        batch_id = uuid4().hex
+        for name in names:
+            agent = self.agents[name]
+            entry = Entry("you", prompt.expand(), name, "queued" if agent.busy else "done",
+                          display_body=prompt.text if prompt.attachments else None, attachments=prompt.attachments[:],
+                          quote=quote.dump() if quote else None, batch_id=batch_id, recipients=names[:])
+            await self.add_entry(entry)
+            agent.queue.append(entry)
+            if agent.busy and name in self.active_entries:
+                self.reply_boundaries.add(name)
+        if self.selected != names[0]:
+            self.select(names[0])
+        if len(names) > 1:
+            self.show_all = True
+            self.apply_filter()
+        followups = []
+        for name in names:
+            if not self.agents[name].busy:
+                self.start_agent(name)
+            else:
+                followups.append(self.deliver_followups(name))
+        if followups:
+            await asyncio.gather(*followups)
         self.refresh_chrome()
         return True
 
@@ -1050,22 +1250,42 @@ class CodexRoom(App):
             if options is None:
                 self.action_add_member()
             else:
-                name = options.name
-                if not re.fullmatch(r"[a-z][a-z0-9_-]{0,19}", name) or name in self.agents or name in {"all", "you", "system"}:
-                    self.notify("名字需要唯一，使用英文字母、数字、_ 或 -，以字母开头，最多 20 位。", severity="warning")
-                    return False
-                return await self.create_member(name, color=options.color, cwd=options.cwd)
+                return await self.create_member(options.name, color=options.color, cwd=options.cwd)
+        elif command == "/rename":
+            if len(parts) == 3:
+                name, label = resolve_member(parts[1], self.agents), parts[2]
+            elif len(parts) == 2:
+                name, label = target, parts[1]
+            else:
+                self.notify("用 /rename 原名 新名，或 /rename 新名 重命名当前成员。")
+                return False
+            if name not in self.agents:
+                self.notify("未找到要重命名的成员。", severity="warning")
+                return False
+            try:
+                label = validate_name(label, self.agents, excluding=name)
+            except ValueError as exc:
+                self.notify(str(exc), severity="warning")
+                return False
+            self.agents[name].label = label
+            for card in self.cards.values():
+                if card.entry.sender == name or card.entry.target == name:
+                    card.refresh_entry()
+            self.completion_signature = ()
+            self.dirty = True
+            self.refresh_chrome()
+            self.save_state()
         elif command == "/del":
             if len(parts) > 2 or (len(parts) == 1 and not explicit_target):
                 self.notify("用 /del 名字 移除成员。", severity="warning")
                 return False
-            name = parts[1].lstrip("@").lower() if len(parts) > 1 else explicit_target
+            name = resolve_member(parts[1], self.agents) if len(parts) > 1 else explicit_target
             if name not in self.agents:
                 self.notify(f"没有 @{name}。", severity="warning")
                 return False
             return await self.delete_agent(name)
         elif command in {"/focus", "/stop"}:
-            name = parts[1].lstrip("@").lower() if len(parts) > 1 else target
+            name = resolve_member(parts[1], self.agents) if len(parts) > 1 else target
             if name not in self.agents:
                 self.notify(f"没有 @{name}。" if name else "请先创建 Codex。", severity="warning")
                 return False
@@ -1090,7 +1310,7 @@ class CodexRoom(App):
                     return False
                 await self.change_permission(target, mode)
             else:
-                self.push_screen(PermissionSettings(target, self.agents[target].permission),
+                self.push_screen(PermissionSettings(self.agents[target].label, self.agents[target].permission),
                                  lambda result: self.change_permission(target, result))
         elif command == "/reconnect":
             if any(agent.busy for agent in self.agents.values()):
@@ -1118,7 +1338,7 @@ class CodexRoom(App):
             self.notify("Codex 没有返回模型列表，可用 /model 模型名 推理强度 指定。", severity="warning")
             return False
         agent = self.agents[name]
-        self.push_screen(ModelSettings(name, self.client.models, agent.model, agent.effort),
+        self.push_screen(ModelSettings(agent.label, self.client.models, agent.model, agent.effort),
                          lambda result: self.change_model(name, result))
         return True
 
@@ -1136,7 +1356,7 @@ class CodexRoom(App):
             self.notify("无效的推理强度。", severity="warning")
             return False
         self.agents[name].model, self.agents[name].effort = model, effort
-        await self.add_entry(Entry("system", f"@{name} · {model} · {effort or '默认强度'} · 下一轮生效", target=name))
+        await self.add_entry(Entry("system", f"@{self.agents[name].label} · {model} · {effort or '默认强度'} · 下一轮生效", target=name))
         self.save_state()
         self.refresh_chrome()
         self.action_composer()
@@ -1146,7 +1366,7 @@ class CodexRoom(App):
         if mode is None:
             return
         self.agents[name].permission = mode
-        await self.add_entry(Entry("system", f"@{name} · {PERMISSION_LABELS[mode]} · 下一轮生效", target=name))
+        await self.add_entry(Entry("system", f"@{self.agents[name].label} · {PERMISSION_LABELS[mode]} · 下一轮生效", target=name))
         self.save_state()
         self.refresh_chrome()
         self.action_composer()
@@ -1202,20 +1422,47 @@ class CodexRoom(App):
         if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"}:
             allowed = self.turn_permissions.get(name, self.agents[name].permission) == "full"
             if not allowed:
-                async with self.request_lock:
-                    allowed = await self.dialog(RuntimeApproval(name, params.get("command") or params.get("reason") or json.dumps(params.get("changes", params.get("permissions", {})), ensure_ascii=False)))
+                allowed = await self.wait_for_interaction(name, RuntimeApproval(self.agents[name].label, params.get("command") or params.get("reason") or json.dumps(params.get("changes", params.get("permissions", {})), ensure_ascii=False)))
             result = {"permissions": params.get("permissions", {}) if allowed else {}, "scope": "turn"} if method == "item/permissions/requestApproval" else {"decision": "accept" if allowed else "decline"}
         elif method in {"item/tool/requestUserInput", "tool/requestUserInput"}:
-            async with self.request_lock:
-                result = await self.dialog(RuntimeQuestion(name, params.get("questions", []))) or {"answers": {}}
+            result = await self.wait_for_interaction(name, RuntimeQuestion(self.agents[name].label, params.get("questions", []))) or {"answers": {}}
         elif method == "mcpServer/elicitation/request":
             result = {"action": "cancel", "content": None}
-            await self.add_entry(Entry("system", f"@{name} 的 MCP 服务需要额外交互，本次请求已取消。", target=name))
+            await self.add_entry(Entry("system", f"@{self.agents[name].label} 的 MCP 服务需要额外交互，本次请求已取消。", target=name))
         else:
             await self.client.send({"id": event["id"], "error": {"code": -32601, "message": f"Unsupported room request: {method}"}})
-            await self.add_entry(Entry("system", f"@{name} 发出暂不支持的交互：{method}", target=name))
+            await self.add_entry(Entry("system", f"@{self.agents[name].label} 发出暂不支持的交互：{method}", target=name))
             return
         await self.client.respond(event["id"], result)
+
+    async def wait_for_interaction(self, name: str, screen: ModalScreen):
+        future = asyncio.get_running_loop().create_future()
+        self.pending_interactions[name] = (screen, future)
+        self.agents[name].phase = "等待你回复…"
+        self.refresh_chrome()
+        try:
+            if self.selected == name and not isinstance(self.screen, ModalScreen):
+                await self.show_interaction(name)
+            else:
+                self.notify(f"@{self.agents[name].label} 需要你回复 · 切到该成员后点击「回复请求」", timeout=7)
+            return await future
+        finally:
+            self.pending_interactions.pop(name, None)
+            self.refresh_chrome()
+
+    async def show_interaction(self, name: str) -> None:
+        if name not in self.pending_interactions or name in self.showing_interactions:
+            return
+        self.showing_interactions.add(name)
+        screen, future = self.pending_interactions[name]
+        try:
+            async with self.request_lock:
+                if not future.done():
+                    result = await self.dialog(screen)
+                    if not future.done():
+                        future.set_result(result)
+        finally:
+            self.showing_interactions.discard(name)
 
     def start_agent(self, name: str) -> None:
         self.agents[name].busy = True
@@ -1232,9 +1479,9 @@ class CodexRoom(App):
                 answer = self.active_entries[name][1]
                 try:
                     if self.demo:
-                        agent.steered_inputs.append(request.body)
+                        agent.steered_inputs.append(request.input_text)
                     elif not self.client or not agent.thread_id or not await self.client.steer_turn(
-                            agent.thread_id, request.body, images=request.image_paths):
+                            agent.thread_id, request.input_text, images=request.image_paths):
                         break
                 except CodexError as exc:
                     # Never silently resend a request whose acceptance is uncertain.
@@ -1242,24 +1489,48 @@ class CodexRoom(App):
                         agent.queue.popleft()
                     request.state = "failed"
                     self.cards[id(request)].refresh_entry()
-                    await self.add_entry(Entry("system", f"@{name} 消息追加未确认：{clean_error(exc)}。未自动重发。", target=name))
+                    await self.add_entry(Entry("system", f"@{agent.label} 消息追加未确认：{clean_error(exc)}。未自动重发。", target=name))
                     continue
                 if not agent.queue or agent.queue[0] is not request:
                     break
                 agent.queue.popleft()
                 request.state = "steered"
+                request.run_id = answer.run_id
                 self.cards[id(request)].refresh_entry()
-                # Keep the continuing reply below the instructions it is responding to.
-                self.entries.pop(next(i for i, entry in enumerate(self.entries) if entry is answer))
-                self.entries.insert(self.entries.index(request) + 1, answer)
-                agent.history.pop(next(i for i, entry in enumerate(agent.history) if entry is answer))
-                agent.history.append(answer)
-                self.room_screen.query_one("#timeline", VerticalScroll).move_child(
-                    self.cards[id(answer)], after=self.cards[id(request)]
-                )
+                # Output already rendered stays in place. Only future output
+                # starts a continuation after this user message.
                 self.dirty = True
         self.save_state()
         self.refresh_chrome()
+
+    async def continuation(self, name: str) -> Entry:
+        request, answer = self.active_entries[name]
+        if name in self.reply_boundaries:
+            self.reply_boundaries.discard(name)
+            if answer.body or answer.blocks:
+                answer.state = "continued"
+                self.cards[id(answer)].refresh_entry()
+                continued = Entry(name, "", state="working", started_at=answer.started_at, run_id=answer.run_id)
+                card = await self.add_entry(continued)
+                card.started_at = self.cards[id(answer)].started_at
+                answer = continued
+                self.active_entries[name] = (request, answer)
+            else:
+                # No output existed yet, so there is nothing to leave behind.
+                # Move this empty shell only; it contains no historical text.
+                self.entries.remove(answer)
+                self.entries.append(answer)
+                self.agents[name].history.remove(answer)
+                self.agents[name].history.append(answer)
+                timeline = self.room_screen.query_one("#timeline", VerticalScroll)
+                timeline.move_child(self.cards[id(answer)], after=list(timeline.children)[-1])
+        return answer
+
+    def finish_run_tools(self, name: str, answer: Entry, status: str) -> None:
+        for segment in self.agents[name].history:
+            if segment.sender == name and segment.run_id == answer.run_id:
+                segment.finish_tools(status)
+                self.refresh_answer(segment)
 
     async def run_agent(self, name: str) -> None:
         agent = self.agents[name]
@@ -1271,12 +1542,14 @@ class CodexRoom(App):
                     if not agent.queue:
                         break
                     request = agent.queue.popleft()
+                self.reply_boundaries.discard(name)
                 agent.steered_inputs.clear()
                 request.state = "done"
                 self.cards[id(request)].refresh_entry()
                 agent.phase = "正在启动会话…" if not self.demo else "正在思考…"
                 started = monotonic()
-                answer = Entry(name, "", state="working", started_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+                answer = Entry(name, "", state="working", started_at=datetime.now().astimezone().isoformat(timespec="seconds"), run_id=uuid4().hex)
+                request.run_id = answer.run_id
                 self.active_entries[name] = (request, answer)
                 card = await self.add_entry(answer)
                 card.started_at = started
@@ -1285,37 +1558,49 @@ class CodexRoom(App):
                     await asyncio.sleep(0.7 * self.speed)
                     agent.phase = "正在回复…"
                     index = 0
+                    segment_start = 0
                     while True:
-                        reply = self.reply_for(name, "\n".join([request.body, *agent.steered_inputs]))
+                        reply = self.reply_for(name, "\n".join([request.input_text, *agent.steered_inputs]))
                         if index >= len(reply):
                             break
-                        answer.body = reply[:index + 7]
+                        current = await self.continuation(name)
+                        if current is not answer:
+                            segment_start = index
+                            answer = current
+                        answer.body = reply[segment_start:index + 7]
                         index += 7
                         self.refresh_answer(answer)
                         await asyncio.sleep(0.045 * self.speed)
                     answer.state = "done"
                 else:
-                    await self.real_reply(name, request.body, answer, images=request.image_paths)
+                    answer = await self.real_reply(name, request.input_text, answer, images=request.image_paths)
                 answer.record_finish(monotonic() - started)
                 self.refresh_answer(answer)
                 self.active_entries.pop(name, None)
+                self.reply_boundaries.discard(name)
                 agent.phase = "已回复，等待下一条消息"
                 self.dirty = True
                 self.save_state()
+                if not self.show_all and self.selected != name:
+                    self.notify(f"@{agent.label} 已完成 · {format_duration(monotonic() - started)}", timeout=5)
         except asyncio.CancelledError:
+            if name in self.active_entries:
+                answer = self.active_entries[name][1]
             if answer and answer.state == "working":
                 answer.state = "stopped"
-                answer.finish_tools("stopped")
+                self.finish_run_tools(name, answer, "stopped")
                 if not answer.body:
                     answer.append_text("回复已停止。")
                 answer.record_finish(monotonic() - started)
                 self.refresh_answer(answer)
             raise
         except Exception as exc:
+            if name in self.active_entries:
+                answer = self.active_entries[name][1]
             message = clean_error(exc)
             if answer:
                 answer.state = "failed"
-                answer.finish_tools("failed")
+                self.finish_run_tools(name, answer, "failed")
                 answer.append_text(f"错误：{message}")
                 answer.record_finish(monotonic() - started)
                 self.refresh_answer(answer)
@@ -1329,6 +1614,7 @@ class CodexRoom(App):
                 self.connection_error = message
             self.active_entries.pop(name, None)
         finally:
+            self.reply_boundaries.discard(name)
             agent.busy = False
             self.turn_permissions.pop(name, None)
             self.dirty = True
@@ -1345,7 +1631,7 @@ class CodexRoom(App):
         if follow:
             self.call_after_refresh(self.scroll_bottom)
 
-    async def real_reply(self, name: str, text: str, answer: Entry, *, images: list[str] | None = None) -> None:
+    async def real_reply(self, name: str, text: str, answer: Entry, *, images: list[str] | None = None) -> Entry:
         if not self.client or not self.connected:
             raise CodexError("Codex 连接已断开，使用 /reconnect 重试。")
         agent = self.agents[name]
@@ -1363,15 +1649,19 @@ class CodexRoom(App):
         self.dirty = True
         self.save_state()
         blocks: dict[str, ReplyBlock] = {}
+        owners: dict[int, Entry] = {}
+        text_parts: dict[str, list[ReplyBlock]] = {}
         summaries: dict[tuple[str, int], str] = {}
 
         def block_for(item_id: str, kind: str) -> ReplyBlock:
             if item_id not in blocks:
                 blocks[item_id] = ReplyBlock(item_id, kind)
                 answer.blocks.append(blocks[item_id])
+                owners[id(blocks[item_id])] = answer
             return blocks[item_id]
 
         async def receive(event: dict) -> None:
+            nonlocal answer
             if "id" in event:
                 agent.phase = "等待交互…"
                 self.cards[id(answer)].refresh_working(self.frame)
@@ -1382,6 +1672,23 @@ class CodexRoom(App):
             method, params = event["method"], event.get("params", {})
             item = params.get("item", {})
             item_id = params.get("itemId") or item.get("id", "")
+            kind = item.get("type")
+            known_text = ("".join(part.text for part in text_parts.get(item_id, [blocks[item_id]]))
+                          if method == "item/completed" and kind == "agentMessage" and item_id in blocks else None)
+            completed_extension = (known_text is not None and item.get("text", "").startswith(known_text)
+                                   and item.get("text", "") != known_text)
+            visible_new = (method == "item/agentMessage/delta" or
+                (method in {"item/started", "item/completed"} and item_id not in blocks
+                 and kind not in {None, "reasoning", "contextCompaction", "userMessage"}) or
+                method == "error" and not params.get("willRetry") or completed_extension)
+            if visible_new:
+                current = await self.continuation(name)
+                if ((method == "item/agentMessage/delta" or completed_extension) and item_id in blocks
+                        and owners[id(blocks[item_id])] is not current):
+                    prior = blocks.pop(item_id)
+                    text_parts.setdefault(item_id, [prior])
+                    prior.status = "completed"
+                answer = current
             if method == "item/reasoning/summaryPartAdded":
                 summaries[(item_id, params.get("summaryIndex", 0))] = ""
                 agent.phase = "正在思考…"
@@ -1393,12 +1700,17 @@ class CodexRoom(App):
             elif method == "item/agentMessage/delta":
                 agent.phase = "正在回复…"
                 block_for(item_id, "text").text += params.get("delta", "")
+                block = blocks[item_id]
+                parts = text_parts.setdefault(item_id, [])
+                if not any(part is block for part in parts):
+                    parts.append(block)
             elif method in {"item/started", "item/completed"}:
                 kind = item.get("type")
                 if kind == "agentMessage" and item.get("text"):
                     agent.phase = "正在回复…"
                     block = block_for(item_id, "text")
-                    block.text = item["text"]
+                    prefix = sum(len(part.text) for part in text_parts.get(item_id, []) if part is not block)
+                    block.text = item["text"][prefix:]
                     block.status = "inProgress" if method == "item/started" else "completed"
                 elif kind == "commandExecution":
                     block = block_for(item_id, "command")
@@ -1437,17 +1749,24 @@ class CodexRoom(App):
                     error = params.get("error") or {}
                     block_for("error", "text").text = "错误：" + clean_error(error.get("message", error))
             if blocks:
-                answer.sync_body()
-                self.refresh_answer(answer)
+                # A command can complete after a followup. Its output belongs
+                # to the card where that command began.
+                changed = blocks.get(item_id)
+                owner = owners.get(id(changed), answer)
+                owner.sync_body()
+                self.refresh_answer(owner)
+                if owner is not answer:
+                    self.cards[id(answer)].refresh_working(self.frame)
             else:
                 self.cards[id(answer)].refresh_working(self.frame)
 
         turn = await self.client.run_turn(settings, text, receive, on_started=lambda: self.deliver_followups(name), images=images)
         answer.state = "stopped" if turn.get("status") == "interrupted" else "done"
-        answer.finish_tools("stopped" if answer.state == "stopped" else "completed")
+        self.finish_run_tools(name, answer, "stopped" if answer.state == "stopped" else "completed")
         if not answer.body and not answer.blocks:
             answer.append_text("回复已停止。" if answer.state == "stopped" else "本轮已完成。")
         self.refresh_answer(answer)
+        return answer
 
     async def delete_agent(self, name: str) -> bool:
         agent = self.agents[name]
@@ -1462,7 +1781,7 @@ class CodexRoom(App):
                 self.store.archive_member(name, {"version": 2, "archived_at": datetime.now().astimezone().isoformat(),
                                                  "agent": agent.config(), "entries": [asdict(entry) for entry in removed]})
             except OSError as exc:
-                self.notify(f"归档失败，已保留 @{name}：{exc}", severity="error")
+                self.notify(f"归档失败，已保留 @{agent.label}：{exc}", severity="error")
                 return False
 
         self.close_completions()
@@ -1470,6 +1789,10 @@ class CodexRoom(App):
         # Keep member metadata until its mounted cards have been removed.
         removed_ids = {id(entry) for entry in removed}
         self.entries = [entry for entry in self.entries if id(entry) not in removed_ids]
+        self.batch_heads.clear()
+        for entry in self.entries:
+            if entry.sender == "you" and entry.batch_id:
+                self.batch_heads.setdefault(entry.batch_id, entry.id)
         await self.room_screen.query_one("#timeline", VerticalScroll).remove_children(
             [self.cards.pop(id(entry)) for entry in removed]
         )
@@ -1477,13 +1800,20 @@ class CodexRoom(App):
             self.selected = next((other for other in self.agents if other != name), "")
         await self.room_screen.query_one(f"#member-{name}", Member).remove()
         del self.agents[name]
+        self.forward_drafts.pop(name, None)
+        if self.forward_target == name:
+            self.forward_quote = None
+            self.forward_target = ""
+        if self.forward_origin and self.forward_origin["selected"] == name:
+            self.forward_origin = None
+        self.refresh_forward_context()
         if not self.agents:
             self.show_all = True
         if self.client and agent.thread_id:
             self.client.loaded.discard(agent.thread_id)
         self.dirty = True
         self.apply_filter()
-        await self.add_entry(Entry("system", f"已移除 @{name}" + (" · 会话记录已归档" if self.store else "")))
+        await self.add_entry(Entry("system", f"已移除 @{agent.label}" + (" · 会话记录已归档" if self.store else "")))
         self.save_state()
         self.action_composer()
         self.refresh_completions()
@@ -1515,7 +1845,7 @@ class CodexRoom(App):
         if self.client and self.client.process and self.client.process.returncode is not None:
             self.connected = False
             self.connection_error = "Codex 连接已关闭，可用 /reconnect 重新连接。"
-        await self.add_entry(Entry("system", f"@{name} 已停止；取消 {cancelled} 条尚未发出的消息。", target=name))
+        await self.add_entry(Entry("system", f"@{agent.label} 已停止；取消 {cancelled} 条尚未发出的消息。", target=name))
         self.refresh_chrome()
 
     async def on_unmount(self) -> None:

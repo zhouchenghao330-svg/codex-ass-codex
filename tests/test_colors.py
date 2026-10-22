@@ -114,7 +114,7 @@ class ColorAppTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("ctrl+n")
                 await pilot.pause()
                 self.assertTrue(await pilot.click("#confirm-add"))
-                self.assertIn("请用英文字母", str(app.screen.query_one("#dialog-error").render()))
+                self.assertIn("中文或字母", str(app.screen.query_one("#dialog-error").render()))
                 await pilot.press("escape")
             restored = CodexRoom(cwd=ROOT, state_dir=Path(tmp))
             async with restored.run_test(size=(100, 36)) as pilot:
