@@ -3,10 +3,33 @@ from __future__ import annotations
 
 from rich.segment import Segment
 from rich.style import Style as RichStyle
+from textual import events
+from textual.geometry import Offset
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.visual import RichVisual, Visual
 from textual.widgets import Static
+
+
+# Match the default word separators in Orca's bundled xterm terminal.
+WORD_SEPARATORS = frozenset(" ()[]{}',\"`")
+
+
+def word_span(line: str, column: int) -> tuple[int, int]:
+    if not line:
+        return 0, 0
+    start = end = min(max(0, column), len(line) - 1)
+    if line[start] == " ":
+        while start > 0 and line[start - 1] == " ":
+            start -= 1
+        while end + 1 < len(line) and line[end + 1] == " ":
+            end += 1
+    else:
+        while start > 0 and line[start - 1] not in WORD_SEPARATORS:
+            start -= 1
+        while end + 1 < len(line) and line[end + 1] not in WORD_SEPARATORS:
+            end += 1
+    return start, end + 1
 
 
 def highlight(strip: Strip, start: int, end: int, style: RichStyle) -> Strip:
@@ -58,12 +81,37 @@ class SelectableStatic(Static):
         visual = super().render()
         return SelectableVisual(visual) if isinstance(visual, RichVisual) else visual
 
+    def selection_lines(self) -> tuple[str, ...]:
+        visual = self._render()
+        if isinstance(visual, SelectableVisual):
+            if not visual.lines:
+                Visual.to_strips(self, visual, self.size.width, None, self.visual_style, apply_selection=False)
+            return visual.lines
+        return tuple(str(visual).splitlines())
+
+    async def _on_click(self, event: events.Click) -> None:
+        if event.widget is not self or event.button != 1 or event.chain not in {2, 3}:
+            return
+        # Textual's default double/triple click selects a widget or its entire
+        # container. Handle these here so neither can select a whole reply.
+        event.prevent_default()
+        event.stop()
+        widget, offset = self.screen.get_widget_and_offset_at(*event.screen_offset)
+        lines = self.selection_lines()
+        self.screen.clear_selection()
+        if widget is not self or offset is None or offset.y >= len(lines):
+            return
+        line = lines[offset.y]
+        if event.chain == 2 and offset.x >= len(line):
+            return
+        start, end = word_span(line, offset.x) if event.chain == 2 else (0, len(line))
+        if start < end:
+            self.screen.selections = {self: Selection(Offset(start, offset.y), Offset(end, offset.y))}
+
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         if not self.display:
             return None
         visual = self._render()
         if not isinstance(visual, SelectableVisual):
             return super().get_selection(selection)
-        if not visual.lines:
-            Visual.to_strips(self, visual, self.size.width, None, self.visual_style, apply_selection=False)
-        return selection.extract("\n".join(visual.lines)), "\n"
+        return selection.extract("\n".join(self.selection_lines())), "\n"

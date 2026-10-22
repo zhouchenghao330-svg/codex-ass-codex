@@ -208,6 +208,12 @@ async def preview() -> None:
         assert app.clipboard == selected and app.is_running
         await pilot.press("escape")
         assert composer.has_focus and not app.screen.get_selected_text()
+        await pilot.double_click(body, offset=(6, 0))
+        selected_word = app.screen.get_selected_text()
+        assert selected_word and "\n" not in selected_word and "界面演示" not in selected_word
+        capture(app, "word-selection.svg", output)
+        await pilot.click(body, offset=(2, 2))
+        assert composer.has_focus and not app.screen.get_selected_text()
 
         await pilot.resize_terminal(86, 26)
         await pilot.pause(0.1)

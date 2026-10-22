@@ -122,10 +122,10 @@ class MessageCard(Vertical):
         self.tools_expanded = False
         self.started_at = monotonic()
         self.animation_frame = 0
-        self.header = Static(classes="message-header")
+        self.header = SelectableStatic(classes="message-header")
         self.body = SelectableStatic(classes="message-body")
-        self.progress = Static(classes="working-status")
-        self.work_summary = Static(classes="work-summary")
+        self.progress = SelectableStatic(classes="working-status")
+        self.work_summary = SelectableStatic(classes="work-summary")
         self.refresh_entry()
 
     def compose(self) -> ComposeResult:

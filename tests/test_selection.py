@@ -2,6 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from rich.cells import cell_len
 from textual import events
 from textual.geometry import Region
 from textual.widgets import Input
@@ -24,6 +25,61 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
         self.environment = patch.dict(os.environ, environment, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
+
+    async def test_double_click_phrase_triple_click_line_and_click_elsewhere_clears(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(110, 36)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("a", "第一段保持未选中。\n\n"
+                "- `Ctrl+C` 复制选中文字，`Esc` 取消；没有选区时 `Ctrl+C` 仍退出。\n\n"
+                "最后一段也保持未选中。"))
+            composer = app.query_one("#message-input", Input)
+            composer.value = "draft"
+            await pilot.pause()
+            lines = card.body.selection_lines()
+            y = next(index for index, line in enumerate(lines) if "没有" in line)
+            x = cell_len(lines[y][:lines[y].index("没有")])
+            await pilot.double_click(card.body, offset=(x, y))
+            self.assertEqual(app.screen.get_selected_text(), "取消；没有选区时")
+            await pilot.press("ctrl+c")
+            self.assertEqual(app.clipboard, "取消；没有选区时")
+            await pilot.click(card.body, offset=(1, 0))
+            self.assertFalse(app.screen.get_selected_text())
+            self.assertTrue(composer.has_focus)
+            self.assertEqual(composer.value, "draft")
+
+            await pilot.triple_click(card.body, offset=(x, y))
+            self.assertEqual(app.screen.get_selected_text(), lines[y])
+            self.assertNotIn("第一段", app.screen.get_selected_text())
+            timeline = app.query_one("#timeline")
+            await pilot.click(timeline, offset=(3, timeline.size.height - 2))
+            self.assertFalse(app.screen.get_selected_text())
+
+            await pilot.double_click(card.body, offset=(card.body.size.width - 2, 0))
+            self.assertFalse(app.screen.get_selected_text())
+            await drag(pilot, card.body, (0, 0), (2, 0))
+            self.assertEqual(app.screen.get_selected_text(), "第一")
+
+    async def test_double_click_code_and_user_message_selects_word_not_whole_widget(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            own = await app.add_entry(Entry("you", "hello other_text goodbye", target="a"))
+            code = await app.add_entry(Entry("a", "Before.\n\n```text\nalpha beta_gamma omega\nsecond line\n```\n\nAfter."))
+            await pilot.pause()
+            lines = own.header.selection_lines()
+            column = cell_len(lines[0][:lines[0].index("other_text")])
+            await pilot.double_click(own.header, offset=(column, 0))
+            self.assertEqual(app.screen.get_selected_text(), "other_text")
+            lines = code.body.selection_lines()
+            y = next(index for index, line in enumerate(lines) if "beta_gamma" in line)
+            x = cell_len(lines[y][:lines[y].index("beta_gamma")])
+            await pilot.double_click(code.body, offset=(x, y))
+            self.assertEqual(app.screen.get_selected_text(), "beta_gamma")
+            await pilot.press("escape")
+            await pilot.triple_click(code.body, offset=(x, y))
+            self.assertEqual(app.screen.get_selected_text(), lines[y])
+            self.assertNotIn("second line", app.screen.get_selected_text())
 
     async def test_drag_unicode_markdown_highlight_copy_and_return_to_composer(self):
         app = CodexRoom(demo=True)
