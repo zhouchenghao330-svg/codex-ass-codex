@@ -13,6 +13,7 @@ from pathlib import Path
 from time import monotonic
 
 from rich.cells import cell_len
+from rich.console import Group
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -20,7 +21,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message as EventMessage
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Select, Static
+from textual.widgets import Button, Input, OptionList, Select, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .runtime import CodexClient, CodexError, clean_error
@@ -31,6 +32,8 @@ from .colors import COLOR_CHOICES, choose_color, member_colors, normalize_color
 from .member_config import parse_add, resolve_directory
 from .completion import Completion, CompletionEngine
 from .selectable import SelectableStatic
+from .composer import ComposerInput
+from .rendering import ReplyVisual
 
 
 MUTED = "#788294"
@@ -119,8 +122,23 @@ class Member(Static):
 
 
 class ReplyBody(SelectableStatic):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.auto_links = False
+        self._render_nodes = {}
+
+    def update(self, content="", *, layout=True) -> None:
+        if isinstance(content, Group):
+            visual = ReplyVisual(self, content.renderables, self._render_nodes)
+            self._render_nodes = visual.nodes
+            content = visual
+        super().update(content, layout=layout)
+
     def action_tools_group(self, index: int) -> None:
         self.parent.cycle_tools_group(index)
+
+    def action_tools_all(self, index: int, level: int) -> None:
+        self.parent.set_tools_group(index, level)
 
     def action_tool_item(self, index: int, part: int) -> None:
         self.parent.toggle_tool_item(index, part)
@@ -139,6 +157,8 @@ class MessageCard(Vertical):
         self.tool_item_expanded: dict[tuple[int, int], bool] = {}
         self.started_at = monotonic()
         self.animation_frame = 0
+        self._body_key = None
+        self._rendered_width = None
         self.header = SelectableStatic(classes="message-header")
         self.body = ReplyBody(classes="message-body")
         self.progress = SelectableStatic(classes="working-status")
@@ -181,11 +201,15 @@ class MessageCard(Vertical):
         self.progress.update(prefix)
 
     def on_resize(self) -> None:
-        self.refresh_entry()
+        if self._rendered_width != self.content_size.width:
+            self.refresh_entry()
 
     def cycle_tools_group(self, index: int) -> None:
         current = self.tool_group_levels.get(index, 2 if self.tools_expanded else 0)
-        self.tool_group_levels[index] = (current + 1) % 3
+        self.set_tools_group(index, 0 if current else 1)
+
+    def set_tools_group(self, index: int, level: int) -> None:
+        self.tool_group_levels[index] = level
         end = index
         while end < len(self.entry.blocks) and self.entry.blocks[end].kind != "text":
             end += 1
@@ -238,8 +262,14 @@ class MessageCard(Vertical):
                     self.header.tooltip = agent.cwd
                 self.header.update(text)
                 self.body.display = bool(entry.body or entry.blocks or entry.state != "working")
-                self.body.update(render_reply(entry, self.tools_expanded, self.content_size.width or 80, agent.color,
-                    group_levels=self.tool_group_levels, expanded_items=self.tool_item_expanded, interactive=True))
+                width = self.content_size.width or 80
+                key = (entry.body, tuple((block.id, block.kind, block.text, block.title, block.status, block.exit_code) for block in entry.blocks),
+                       self.tools_expanded, tuple(self.tool_group_levels.items()), tuple(self.tool_item_expanded.items()), width, agent.color)
+                if key != self._body_key:
+                    self.body.update(render_reply(entry, self.tools_expanded, width, agent.color,
+                        group_levels=self.tool_group_levels, expanded_items=self.tool_item_expanded, interactive=True))
+                    self._body_key = key
+                    self._rendered_width = self.content_size.width
                 self.refresh_working()
                 self.refresh_completion()
                 return
@@ -343,6 +373,7 @@ class Help(ModalScreen[None]):
                 "[b]Ctrl+N[/] 添加成员           [b]@[/] 打开成员选择\n"
                 "[b]↑ / ↓[/] 选择候选           [b]Tab / Enter[/] 补全\n"
                 "[b]空输入框按 ↑[/] 调出历史，再用 ↑ / ↓ 翻阅\n"
+                "[b]Enter[/] 发送   [b]Shift+Enter / Ctrl+J[/] 换行\n"
                 "[b]/命令、成员、模型、权限、目录和颜色[/] 均支持补全\n"
                 "[b]Ctrl+B[/] 展开 / 收起成员\n"
                 "[b]Ctrl+T[/] 展开 / 收起工具调用详情\n"
@@ -363,88 +394,6 @@ class Help(ModalScreen[None]):
 
 class CompletionList(OptionList, can_focus=False):
     """A mouse-selectable popup which leaves keyboard focus in the composer."""
-
-
-class ComposerInput(Input):
-    """Complete tokens and recall submitted inputs without dispatching either."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.reset_history_navigation()
-
-    def reset_history_navigation(self) -> None:
-        self._history_index: int | None = None
-        self._history_values: list[str] = []
-        self._history_drafts: dict[int, tuple[str, int]] = {}
-
-    def recall_history(self, direction: int) -> bool:
-        if self._history_index is None:
-            if direction > 0 or self.value or not self.app.input_history:
-                return False
-            self._history_values = self.app.input_history[:]
-            self._history_index = len(self._history_values)
-        self._history_drafts[self._history_index] = (self.value, self.cursor_position)
-        index = max(0, min(len(self._history_values), self._history_index + direction))
-        original = self._history_values[index] if index < len(self._history_values) else ""
-        value, cursor = self._history_drafts.get(index, (original, len(original)))
-        self._history_index = index
-        self.value = value
-        self.cursor_position = cursor
-        # Recalled slash commands must remain browsable until the user edits or presses Tab.
-        self.app.close_completions()
-        self.app.refresh_recipient()
-        return True
-
-    async def _on_key(self, event: events.Key) -> None:
-        app = self.app
-        if (event.key in {"up", "down"} and (not self.value or not app.completion_open)
-                and self.recall_history(-1 if event.key == "up" else 1)):
-            event.prevent_default()
-            event.stop()
-            return
-        if event.key in {"up", "down", "tab", "shift+tab", "escape"}:
-            app.refresh_completions(explicit=event.key != "escape")
-        if app.completion_open and event.key in {"up", "down", "tab", "shift+tab", "escape"}:
-            menu = app.room_screen.query_one("#completion-list", CompletionList)
-            if event.key in {"up", "shift+tab"}:
-                menu.action_cursor_up()
-            elif event.key == "down":
-                menu.action_cursor_down()
-            elif event.key == "tab":
-                app.accept_completion()
-            else:
-                app.close_completions()
-                app.refresh_recipient()
-            event.prevent_default()
-            event.stop()
-            return
-        if event.key in {"tab", "shift+tab"}:
-            event.prevent_default()
-            event.stop()
-            return
-        await super()._on_key(event)
-
-    async def action_submit(self) -> None:
-        self.app.refresh_completions()
-        if self.app.completion_open:
-            if self.app.completion.candidates:
-                self.app.accept_completion()
-                return
-            if self.app.completion.kind in {"mention", "command"}:
-                return
-            await super().action_submit()
-        else:
-            await super().action_submit()
-
-    def _on_blur(self, event: events.Blur) -> None:
-        super()._on_blur(event)
-        if hasattr(self.app, "room_screen"):
-            self.app.close_completions()
-
-    def _watch_selection(self, selection) -> None:
-        super()._watch_selection(selection)
-        if self.is_mounted and hasattr(self.app, "room_screen"):
-            self.call_after_refresh(self.app.refresh_completions)
 
 
 class CodexRoom(App):
@@ -546,7 +495,7 @@ class CodexRoom(App):
                 yield CompletionList(id="completion-list")
                 with Horizontal(id="composer"):
                     yield Static("›", id="prompt")
-                    yield ComposerInput(placeholder="说点什么，或 @名字…", id="message-input", select_on_focus=False)
+                    yield ComposerInput(placeholder="说点什么，或 @名字…", id="message-input")
                 with Horizontal(id="footer"):
                     yield Button("› 成员", id="toggle-sidebar", tooltip="展开 / 收起成员列表 · Ctrl+B")
                     yield Static("", id="recipient")
@@ -574,7 +523,7 @@ class CodexRoom(App):
         if not self.demo:
             self.connection_task = asyncio.create_task(self.connect_codex())
         self.refresh_chrome()
-        self.query_one("#message-input", Input).focus()
+        self.query_one("#message-input", ComposerInput).focus()
         self.call_after_refresh(self.scroll_bottom)
 
     def on_app_focus(self) -> None:
@@ -586,7 +535,7 @@ class CodexRoom(App):
         if self.screen is not getattr(self, "room_screen", None) or event.button != 1:
             return
         widget = event.widget
-        if widget and any(isinstance(node, (Input, Button, Select, OptionList, Member))
+        if widget and any(isinstance(node, (Input, ComposerInput, Button, Select, OptionList, Member))
                           for node in (widget, *widget.ancestors)):
             return
         if event.style and (event.style.link or event.style.meta.get("@click")):
@@ -597,7 +546,7 @@ class CodexRoom(App):
     def on_key(self, event: events.Key) -> None:
         if self.screen is not getattr(self, "room_screen", None) or not event.is_printable:
             return
-        composer = self.room_screen.query_one("#message-input", Input)
+        composer = self.room_screen.query_one("#message-input", ComposerInput)
         if not composer.has_focus:
             self.screen.clear_selection()
             composer.focus()
@@ -608,7 +557,7 @@ class CodexRoom(App):
     def on_paste(self, event: events.Paste) -> None:
         if self.screen is not getattr(self, "room_screen", None):
             return
-        composer = self.room_screen.query_one("#message-input", Input)
+        composer = self.room_screen.query_one("#message-input", ComposerInput)
         if not composer.has_focus:
             self.screen.clear_selection()
             composer.focus()
@@ -634,7 +583,8 @@ class CodexRoom(App):
     def scroll_bottom(self) -> None:
         if not self.is_running or self.shutting_down:
             return
-        self.room_screen.query_one("#timeline", VerticalScroll).scroll_end(animate=False, immediate=True)
+        # Completion metadata and wrapped content can change height on the next layout.
+        self.room_screen.query_one("#timeline", VerticalScroll).scroll_end(animate=False)
 
     def tick(self) -> None:
         if not self.is_running or self.shutting_down:
@@ -650,14 +600,14 @@ class CodexRoom(App):
 
     def close_completions(self) -> None:
         self.completion_open = False
-        composer = self.room_screen.query_one("#message-input", Input)
+        composer = self.room_screen.query_one("#message-input", ComposerInput)
         self.dismissed_completion = (composer.value, composer.cursor_position)
         self.room_screen.query_one("#completion-list", CompletionList).display = False
 
     def refresh_completions(self, *, explicit: bool = False) -> None:
         if not self.is_running or not self.is_mounted or self.shutting_down:
             return
-        composer = self.room_screen.query_one("#message-input", Input)
+        composer = self.room_screen.query_one("#message-input", ComposerInput)
         menu = self.room_screen.query_one("#completion-list", CompletionList)
         position = (composer.value, composer.cursor_position)
         if not composer.has_focus or (position == self.dismissed_completion and not explicit):
@@ -716,7 +666,7 @@ class CodexRoom(App):
         if context is None or index is None or index >= len(context.candidates):
             return
         item = context.candidates[index]
-        composer = self.room_screen.query_one("#message-input", Input)
+        composer = self.room_screen.query_one("#message-input", ComposerInput)
         value, cursor = context.apply(composer.value, item)
         self.close_completions()
         composer.value = value
@@ -752,7 +702,7 @@ class CodexRoom(App):
         self.room_screen.query_one("#connection", Static).update(f"F1 帮助 · {state}")
 
     def refresh_recipient(self) -> None:
-        value = self.room_screen.query_one("#message-input", Input).value
+        value = self.room_screen.query_one("#message-input", ComposerInput).value
         match = re.match(r"^@([\w-]+)(?:\s|$)", value)
         name = match.group(1).lower() if match else self.selected
         recipient = Text()
@@ -777,7 +727,7 @@ class CodexRoom(App):
         elif value.startswith("/"):
             recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /del  /help", style=MUTED)
         self.room_screen.query_one("#recipient", Static).update(recipient)
-        self.room_screen.query_one("#message-input", Input).placeholder = f"给 @{self.selected} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
+        self.room_screen.query_one("#message-input", ComposerInput).placeholder = f"给 @{self.selected} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
 
     async def add_entry(self, entry: Entry) -> MessageCard:
         self.entries.append(entry)
@@ -831,10 +781,12 @@ class CodexRoom(App):
 
     def action_composer(self) -> None:
         self.room_screen.clear_selection()
-        self.room_screen.query_one("#message-input", Input).focus()
+        self.room_screen.query_one("#message-input", ComposerInput).focus()
 
     async def action_copy_selection(self) -> bool:
         text = self.screen.get_selected_text()
+        if not text and isinstance(self.focused, ComposerInput):
+            text = self.focused.selected_text
         if not text and isinstance(self.focused, Input) and not self.focused.password:
             text = self.focused.selected_text
         if not text:
@@ -947,12 +899,13 @@ class CodexRoom(App):
         self.save_state()
         return True
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "message-input":
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id == "message-input":
+            event.text_area.resize_to_content()
             self.refresh_completions()
             self.refresh_recipient()
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_composer_input_submitted(self, event: ComposerInput.Submitted) -> None:
         if event.input.id != "message-input":
             return
         value = event.value.strip()

@@ -9,6 +9,7 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.visual import RichVisual, Visual
 from textual.widgets import Static
+from .rendering import ReplyVisual
 
 
 # Match the default word separators in Orca's bundled xterm terminal.
@@ -52,6 +53,8 @@ class SelectableVisual(Visual):
     def __init__(self, source: Visual) -> None:
         self.source = source
         self.lines: tuple[str, ...] = ()
+        self._raw_strips = None
+        self._offset_strips = None
 
     def get_optimal_width(self, rules, container_width):
         return self.source.get_optimal_width(rules, container_width)
@@ -61,7 +64,12 @@ class SelectableVisual(Visual):
 
     def render_strips(self, width, height, style, options):
         strips = self.source.render_strips(width, height, style, options)
-        self.lines = tuple(strip.text.rstrip() for strip in strips)
+        if strips is not self._raw_strips:
+            self._raw_strips = strips
+            self.lines = tuple(strip.text.rstrip() for strip in strips)
+            self._offset_strips = [strip.apply_offsets(0, y) for y, strip in enumerate(strips)]
+        if options.selection is None:
+            return self._offset_strips
         result = []
         for y, strip in enumerate(strips):
             if options.selection is not None and options.selection_style is not None:
@@ -79,7 +87,7 @@ class SelectableStatic(Static):
 
     def render(self):
         visual = super().render()
-        return SelectableVisual(visual) if isinstance(visual, RichVisual) else visual
+        return SelectableVisual(visual) if isinstance(visual, (RichVisual, ReplyVisual)) else visual
 
     def selection_lines(self) -> tuple[str, ...]:
         visual = self._render()

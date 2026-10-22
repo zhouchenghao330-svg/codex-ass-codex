@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from textual.widgets import Button, Input
 
-from codex_room.app import CodexRoom
+from codex_room.app import ComposerInput, CodexRoom
 from codex_room.runtime import CodexClient
 
 
@@ -44,7 +44,7 @@ class MemberTests(unittest.IsolatedAsyncioTestCase):
                 other_thread = app.agents["b"].thread_id
                 other_task = app.tasks["b"]
                 app.select("a", single=True)
-                composer = app.query_one("#message-input", Input)
+                composer = app.query_one("#message-input", ComposerInput)
                 composer.value = "/del "
                 composer.cursor_position = len(composer.value)
                 await pilot.pause()
@@ -157,4 +157,4 @@ class MemberTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.sidebar_visible)
             self.assertFalse(app.query_one("#sidebar").display)
             self.assertEqual(str(toggle.label), "› 成员")
-            self.assertTrue(app.query_one("#message-input", Input).has_focus)
+            self.assertTrue(app.query_one("#message-input", ComposerInput).has_focus)

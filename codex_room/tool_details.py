@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 import shlex
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from rich.style import Style
 from rich.text import Text
 from rich.cells import cell_len
+from rich.syntax import Syntax
 
 if TYPE_CHECKING:
     from .transcript import ReplyBlock
@@ -27,6 +29,16 @@ def command_title(command: str) -> str:
     except ValueError:
         pass
     return " ".join(command.split())
+
+
+@lru_cache(maxsize=128)
+def shell_text(command: str) -> Text:
+    text = Syntax("", "bash", theme="ansi_dark").highlight(command)
+    text.rstrip()
+    text.style = "#c5cdd9"
+    text.highlight_regex(r"(?<!\w)--?[A-Za-z][A-Za-z0-9_-]*", style="#e8b878")
+    text.highlight_regex(r"(?:^|[;|&]\s*)[A-Za-z_][\w-]*", style="#83c8e8")
+    return text
 
 
 def payload(block: ReplyBlock):
@@ -142,12 +154,15 @@ def tool_summary(blocks: list[ReplyBlock], expanded: bool, width: int, *, level:
     failed = sum(block.status in FAILED for block in blocks)
     status = "执行中" if any(block.status == "inProgress" for block in blocks) else (
         f"{failed} 项失败" if failed else "已停止" if any(block.status == "stopped" for block in blocks) else "已完成")
-    hint = ("点击展开 · Ctrl+T 展开", "点击查看全部", "点击收起 · Ctrl+T 收起")[level]
+    hint = "点击展开 · Ctrl+T 展开" if not level else "点击收起"
     suffix = f" · {status}  ({hint})"
+    extra = "  [全部详情]" if level == 1 else "  [仅看摘要]" if level == 2 else ""
     style = action_style(f"tools_group({group_index})", interactive, "#e8b878" if failed else MUTED)
     line = Text(("▾ " if level else "▸ ") + label, style=style, no_wrap=True)
-    line.truncate(max(4, width - Text(suffix).cell_len), overflow="ellipsis")
+    line.truncate(max(4, width - Text(suffix + extra).cell_len), overflow="ellipsis")
     line.append(suffix, style=style)
+    if extra:
+        line.append(extra, style=action_style(f"tools_all({group_index},{2 if level == 1 else 1})", interactive, "#83c8e8"))
     return line
 
 
@@ -217,21 +232,33 @@ def render_tool_group(blocks: list[ReplyBlock], start: int, level: int, width: i
         for part, change in parts:
             expanded = expanded_items.get((index, part), level == 2)
             style = action_style(f"tool_item({index},{part})", interactive, "#e8b878" if block.status in FAILED else MUTED)
-            title = Text("  " + ("▾ " if expanded else "▸ "), style=style, no_wrap=True)
+            title = Text("  " + ("▾ " if expanded else "▸ "), style=style, no_wrap=block.kind != "command")
             if change:
                 verb = {"add": "新增", "delete": "删除", "update": "修改", "rename": "重命名"}.get(change.action, "修改")
                 path = f"{change.previous} → {change.path}" if change.previous else change.path
                 path = short_path(path, max(8, width - cell_len(f"    {verb} ·   {counts(change)} · {status_text(block)}")))
                 title.append(f"{verb} · {path}  {counts(change)}", style=style)
+            elif block.kind == "command":
+                title.append("命令 · ")
+                title.append_text(shell_text(command_title(block.title)).copy())
             else:
                 title.append(tool_title(block), style=style)
             title.append(f" · {status_text(block)}", style=style)
-            title.truncate(max(4, width), overflow="ellipsis")
+            if block.kind != "command":
+                title.truncate(max(4, width), overflow="ellipsis")
             yield title
             if expanded:
                 if change:
                     yield Text((f"{change.previous} → " if change.previous else "") + change.path + f"  ({counts(change)})", style=MUTED)
                     yield diff_text(change)
+                elif block.kind == "command":
+                    command = Text("$ ", style=MUTED)
+                    command.append_text(shell_text(block.title).copy())
+                    yield command
+                    if block.text:
+                        yield Text(block.text.rstrip(), style=MUTED)
+                    if block.exit_code is not None:
+                        yield Text(f"[退出码 {block.exit_code}]", style=MUTED)
                 else:
                     yield tool_content(block)
             elif not change:

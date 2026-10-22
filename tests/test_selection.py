@@ -7,7 +7,7 @@ from textual import events
 from textual.geometry import Region
 from textual.widgets import Input
 
-from codex_room.app import CodexRoom
+from codex_room.app import ComposerInput, CodexRoom
 from codex_room.transcript import Entry, ReplyBlock
 
 
@@ -33,7 +33,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             card = await app.add_entry(Entry("a", "第一段保持未选中。\n\n"
                 "- `Ctrl+C` 复制选中文字，`Esc` 取消；没有选区时 `Ctrl+C` 仍退出。\n\n"
                 "最后一段也保持未选中。"))
-            composer = app.query_one("#message-input", Input)
+            composer = app.query_one("#message-input", ComposerInput)
             composer.value = "draft"
             await pilot.pause()
             lines = card.body.selection_lines()
@@ -88,7 +88,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             entry = Entry("a", '你好，**可以选择**文字。\n\nEnglish words for selection\n\n'
                                '[文档](https://example.com/docs)\n\n```python\nprint("**literal**")\n```')
             card = await app.add_entry(entry)
-            composer = app.query_one("#message-input", Input)
+            composer = app.query_one("#message-input", ComposerInput)
             composer.value = "draft"
             composer.cursor_position = 2
             await pilot.pause()
@@ -171,7 +171,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_copy_input_selection_then_ctrl_c_without_selection_exits(self):
         app = CodexRoom(demo=True)
         async with app.run_test(size=(80, 26)) as pilot:
-            composer = app.query_one("#message-input", Input)
+            composer = app.query_one("#message-input", ComposerInput)
             composer.value = "selected draft"
             await pilot.press("ctrl+shift+a", "ctrl+c")
             self.assertTrue(app.is_running)

@@ -10,7 +10,7 @@ from textual import events
 from textual.geometry import Region
 from textual.widgets import Input
 
-from codex_room.app import AddMember, CodexRoom
+from codex_room.app import ComposerInput, AddMember, CodexRoom
 from codex_room.runtime import CodexClient
 from codex_room.transcript import Entry
 
@@ -34,7 +34,7 @@ class ConversationUITests(unittest.IsolatedAsyncioTestCase):
             await app.create_member("a")
             card = await app.add_entry(Entry("a", "This is a selectable reply."))
             await pilot.pause()
-            composer = app.query_one("#message-input", Input)
+            composer = app.query_one("#message-input", ComposerInput)
             timeline = app.query_one("#timeline")
 
             timeline.focus()
@@ -97,13 +97,13 @@ class ConversationUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.selected, "a")
                 self.assertFalse(app.show_all)
                 self.assertTrue(app.agents["b"].busy)
-                self.assertTrue(app.query_one("#message-input", Input).has_focus)
+                self.assertTrue(app.query_one("#message-input", ComposerInput).has_focus)
                 for entry in app.entries:
                     if entry.sender == "a" or entry.target == "a":
                         self.assertTrue(app.cards[id(entry)].display)
                     elif entry.sender == "b" or entry.target == "b":
                         self.assertFalse(app.cards[id(entry)].display)
-                composer = app.query_one("#message-input", Input)
+                composer = app.query_one("#message-input", ComposerInput)
                 composer.value = "draft"
                 await pilot.click("#all-messages")
                 self.assertTrue(app.show_all)

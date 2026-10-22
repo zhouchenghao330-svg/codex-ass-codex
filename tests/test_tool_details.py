@@ -6,9 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rich.console import Console
+from rich.cells import cell_len
 from textual.widgets import Input
 
-from codex_room.app import CodexRoom
+from codex_room.app import ComposerInput, CodexRoom
 from codex_room.runtime import CodexClient
 from codex_room.tool_details import file_changes
 from codex_room.transcript import Entry, ReplyBlock, render_reply
@@ -56,7 +57,7 @@ class ToolDetailsUITests(unittest.IsolatedAsyncioTestCase):
                 answer = app.agents["a"].history[-1]
                 card = app.cards[id(answer)]
                 body = card.body
-                composer = app.query_one("#message-input", Input)
+                composer = app.query_one("#message-input", ComposerInput)
                 composer.value = "preserved draft"
                 composer.cursor_position = 3
                 await pilot.pause()
@@ -64,7 +65,8 @@ class ToolDetailsUITests(unittest.IsolatedAsyncioTestCase):
                 async def click_line(needle):
                     lines = body.selection_lines()
                     y = next(i for i, line in enumerate(lines) if needle in line)
-                    await pilot.click(body, offset=(2, y))
+                    x = cell_len(lines[y][:lines[y].index(needle)]) + 1
+                    await pilot.click(body, offset=(x, y))
                     await pilot.pause()
 
                 collapsed = "\n".join(body.selection_lines())
@@ -101,7 +103,11 @@ class ToolDetailsUITests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("escape")
                 await click_line("修改 · src/app.py")
                 self.assertNotIn("+new_value", "\n".join(body.selection_lines()))
-                await click_line("点击查看全部")
+                await click_line("点击收起")
+                self.assertNotIn("MCP preview", "\n".join(body.selection_lines()))
+                self.assertNotIn("COMMAND_OUTPUT", "\n".join(body.selection_lines()))
+                await click_line("点击展开")
+                await click_line("全部详情")
                 full = "\n".join(body.selection_lines())
                 self.assertIn("MCP_RESULT", full)
                 self.assertIn("DYNAMIC_OUTPUT", full)

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from textual.widgets import Input
 
-from codex_room.app import CodexRoom
+from codex_room.app import ComposerInput, CodexRoom
 from codex_room.runtime import CodexClient
 
 
@@ -20,7 +20,7 @@ def client(cwd):
 
 
 async def send(app, pilot, value):
-    composer = app.query_one("#message-input", Input)
+    composer = app.query_one("#message-input", ComposerInput)
     composer.value = value
     composer.cursor_position = len(value)
     await pilot.press("enter")
@@ -30,7 +30,7 @@ class InputHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_input_browses_messages_and_commands_without_dispatching(self):
         app = CodexRoom(demo=True, speed=0.01)
         async with app.run_test(size=(100, 32)) as pilot:
-            composer = app.query_one("#message-input", Input)
+            composer = app.query_one("#message-input", ComposerInput)
             await pilot.press("up", "down")
             self.assertEqual(composer.value, "")
             await app.create_member("a")
@@ -75,7 +75,7 @@ class InputHistoryTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 32)) as pilot:
             await app.create_member("alice")
             await app.create_member("bob")
-            composer = app.query_one("#message-input", Input)
+            composer = app.query_one("#message-input", ComposerInput)
             await send(app, pilot, "sent message")
             await send(app, pilot, "sent message")
             self.assertEqual(app.input_history, ["sent message"])
@@ -117,7 +117,7 @@ class InputHistoryTests(unittest.IsolatedAsyncioTestCase):
             restored = CodexRoom(cwd=ROOT, state_dir=state_dir)
             async with restored.run_test() as pilot:
                 await restored.connection_task
-                composer = restored.query_one("#message-input", Input)
+                composer = restored.query_one("#message-input", ComposerInput)
                 self.assertEqual(restored.input_history, ["/add a", "@a 你好", "/permissions read-only"])
                 await pilot.press("up", "up")
                 self.assertEqual(composer.value, "@a 你好")
@@ -133,4 +133,4 @@ class InputHistoryTests(unittest.IsolatedAsyncioTestCase):
                 await legacy.connection_task
                 self.assertEqual(legacy.input_history, ["@a 你好"])
                 await pilot.press("up")
-                self.assertEqual(legacy.query_one("#message-input", Input).value, "@a 你好")
+                self.assertEqual(legacy.query_one("#message-input", ComposerInput).value, "@a 你好")

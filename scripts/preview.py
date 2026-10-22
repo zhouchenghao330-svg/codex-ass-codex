@@ -13,7 +13,7 @@ os.environ["TERM"] = "xterm-256color"
 from rich.cells import cell_len
 from textual.widgets import Input
 
-from codex_room.app import CodexRoom
+from codex_room.app import ComposerInput, CodexRoom
 
 
 def capture(app: CodexRoom, name: str, output: Path) -> None:
@@ -49,7 +49,7 @@ async def preview() -> None:
         app.select("exp")
 
         # Picking a mention must never submit a message or resize the timeline.
-        composer = app.query_one("#message-input", Input)
+        composer = app.query_one("#message-input", ComposerInput)
         entry_count = len(app.entries)
         timeline_region = app.query_one("#timeline").region
         composer.value = "@"
@@ -120,7 +120,7 @@ async def preview() -> None:
         assert app.show_all
         await pilot.click("#toggle-sidebar")
         assert not app.query_one("#sidebar").display
-        composer = app.query_one("#message-input", Input)
+        composer = app.query_one("#message-input", ComposerInput)
         composer.value = "检查 GPU 和实验进程"
         composer.cursor_position = len(composer.value)
         await pilot.press("enter")

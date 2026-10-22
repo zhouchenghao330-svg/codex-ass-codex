@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from textual.widgets import Input
 
-from codex_room.app import AddMember, CodexRoom
+from codex_room.app import ComposerInput, AddMember, CodexRoom
 from codex_room.member_config import parse_add, resolve_directory
 from codex_room.runtime import CodexClient
 
@@ -71,7 +71,7 @@ class MemberDirectoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.agents['a'].model, 'project-model-a')
                 self.assertEqual(app.agents['b'].model, 'project-model-b')
                 self.assertEqual(app.agents['a'].effort, 'low')
-                composer = app.query_one('#message-input', Input)
+                composer = app.query_one('#message-input', ComposerInput)
                 composer.value = '/add missing ./not-here'
                 composer.cursor_position = len(composer.value)
                 await pilot.press('enter')

@@ -11,7 +11,7 @@ from rich.console import Console
 from textual.geometry import Region
 from textual.widgets import Input, Select
 
-from codex_room.app import Agent, CodexRoom
+from codex_room.app import ComposerInput, Agent, CodexRoom
 from codex_room.runtime import CodexClient, CodexError
 from codex_room.settings import ModelSettings, RuntimeApproval, RuntimeQuestion
 from codex_room.storage import RoomStore
@@ -123,7 +123,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 await app.submit('/add a')
                 await app.submit('/add b')
                 app.select('a')
-                composer = app.query_one('#message-input', Input)
+                composer = app.query_one('#message-input', ComposerInput)
                 count = len(app.entries)
                 composer.value = '@b'
                 composer.cursor_position = len(composer.value)
@@ -210,7 +210,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.2)
                 self.assertRegex(status_text(), r"1m 0[5-6]s")
                 self.assertNotIn("检查项目结构", app.agents["b"].phase)
-                composer = app.query_one("#message-input", Input)
+                composer = app.query_one("#message-input", ComposerInput)
                 composer.value = "a pending draft"
                 composer.cursor_position = len(composer.value)
                 composer.cursor_position = 3
@@ -322,7 +322,7 @@ class AppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("3 个命令", collapsed)
                 self.assertEqual(collapsed.count("Ctrl+T 展开"), 1)
                 self.assertNotIn("Skill instructions", collapsed)
-                composer = app.query_one("#message-input", Input)
+                composer = app.query_one("#message-input", ComposerInput)
                 composer.value = "draft @test"
                 composer.cursor_position = len(composer.value)
                 composer.cursor_position = 5

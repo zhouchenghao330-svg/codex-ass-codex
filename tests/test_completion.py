@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from textual.widgets import Input
 
-from codex_room.app import Agent, CodexRoom
+from codex_room.app import ComposerInput, Agent, CodexRoom
 from codex_room.completion import CompletionEngine
 from codex_room.member_config import parse_add
 from codex_room.runtime import CodexClient
@@ -82,7 +82,7 @@ class CompletionUITests(unittest.IsolatedAsyncioTestCase):
                 await app.submit("/add a")
                 await app.submit("/add b")
                 app.select("a")
-                composer = app.query_one("#message-input", Input)
+                composer = app.query_one("#message-input", ComposerInput)
 
                 async def draft(value, cursor=None):
                     composer.value = value
@@ -140,7 +140,7 @@ class CompletionUITests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(80, 26)) as pilot:
             await app.create_member("alice")
             await app.create_member("bob")
-            composer = app.query_one("#message-input", Input)
+            composer = app.query_one("#message-input", ComposerInput)
             composer.value = "/focus "
             composer.cursor_position = len(composer.value)
             await pilot.pause()
@@ -179,7 +179,7 @@ class CompletionUITests(unittest.IsolatedAsyncioTestCase):
             app = CodexRoom(cwd=room, state_dir=base / "state")
             async with app.run_test(size=(100, 32)) as pilot:
                 await app.connection_task
-                composer = app.query_one("#message-input", Input)
+                composer = app.query_one("#message-input", ComposerInput)
                 composer.value = '/add new "./My P'
                 composer.cursor_position = len(composer.value)
                 await pilot.press("tab")
