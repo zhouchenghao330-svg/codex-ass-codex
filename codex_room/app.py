@@ -442,7 +442,7 @@ class Help(ModalScreen[None]):
                 "[b]Ctrl+T[/] 展开 / 收起工具调用详情\n"
                 "拖选对话后点击底部 [b]转发[/]，或按 [b]Ctrl+F[/]\n"
                 "选择现有成员或新建，补一句任务后发送；引用含折叠详情\n"
-                "[b]← 返回来源[/] 恢复原视图、位置和草稿\n"
+                "[b]← 返回来源[/] 回到来源最新消息，恢复原视图和草稿\n"
                 "点击回复前的 [b]▾ / ▸[/] 收起 / 展开整条回复\n"
                 "长粘贴 / 图片显示为块，退格整块删除\n"
                 "[b]Alt+Enter[/] 展开光标处的长粘贴原文\n"
@@ -985,7 +985,6 @@ class CodexRoom(App):
         if quote:
             composer = self.room_screen.query_one("#message-input", ComposerInput)
             self.forward_capture = (quote, {"selected": self.selected, "show_all": self.show_all,
-                "scroll_y": self.room_screen.query_one("#timeline").scroll_y,
                 "prompt": composer.prompt, "cursor": composer.cursor_position})
 
     def action_forward_selection(self) -> None:
@@ -1061,14 +1060,15 @@ class CodexRoom(App):
         self.selected = origin["selected"] if origin["selected"] in self.agents else next(iter(self.agents), "")
         self.show_all = origin["show_all"]
         self.room_screen.clear_selection()
-        self.apply_filter()
+        self.forward_origin = None
+        self.refresh_forward_context()
         composer.load_prompt(origin["prompt"])
         composer.cursor_position = origin["cursor"]
         composer.focus()
-        timeline = self.room_screen.query_one("#timeline")
-        self.call_after_refresh(lambda: timeline.scroll_to(y=origin["scroll_y"], animate=False, immediate=True))
-        self.forward_origin = None
-        self.refresh_forward_context()
+        composer.resize_to_content()
+        # Filter and scroll only after the quote controls and restored draft
+        # have their final sizes. Old numeric offsets point into stale content.
+        self.apply_filter()
 
     async def member_added(self, result: tuple[str, str, str] | None) -> None:
         if result:

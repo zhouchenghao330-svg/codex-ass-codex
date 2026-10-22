@@ -31,6 +31,47 @@ async def wait_until(predicate, pilot):
 
 
 class ForwardingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_return_to_source_scrolls_to_latest_after_layout_and_draft_restore(self):
+        for show_all in (False, True):
+            with self.subTest(show_all=show_all):
+                app = CodexRoom(demo=True, cwd=ROOT, speed=.001)
+                async with app.run_test(size=(80, 26)) as pilot:
+                    await app.create_member("a")
+                    await app.create_member("b")
+                    source = await app.add_entry(Entry("a", "来源对话内容。\n\n" * 80))
+                    await app.add_entry(Entry("b", "其他成员内容。\n\n" * 60))
+                    app.select("a", single=not show_all)
+                    editor = app.query_one(ComposerInput)
+                    editor.value = "\n".join(f"来源未发送草稿，第 {index} 行。" for index in range(6))
+                    original = editor.prompt.dump()
+                    await pilot.pause()
+                    timeline = app.query_one("#timeline")
+                    timeline.scroll_to(y=timeline.max_scroll_y // 2, animate=False, immediate=True)
+                    await pilot.pause()
+                    self.assertFalse(timeline.is_vertical_scroll_end)
+                    app.room_screen.selections = {source.body: Selection(Offset(0, 0), Offset(4, 0))}
+                    app.prepare_forward_selection()
+                    app.open_forward_draft("b")
+                    editor.value = "接收者未发送的补充任务"
+                    if show_all:
+                        await pilot.press("enter")
+                        await app.tasks["b"]
+                    await app.add_entry(Entry("a", "离开期间新增的来源回复。\n\n" * 12))
+                    await pilot.pause()
+                    await pilot.click("#forward-return")
+                    await pilot.pause(.2)
+                    self.assertEqual(app.selected, "a")
+                    self.assertEqual(app.show_all, show_all)
+                    self.assertEqual(editor.prompt.dump(), original)
+                    self.assertTrue(editor.has_focus)
+                    self.assertTrue(timeline.is_vertical_scroll_end,
+                                    f"returned to {timeline.scroll_y} instead of {timeline.max_scroll_y}")
+                    if not show_all:
+                        app.select("b", single=True)
+                        await pilot.pause()
+                        self.assertEqual(editor.value, "接收者未发送的补充任务")
+                        self.assertIsNotNone(app.forward_quote)
+
     async def source(self, app, pilot):
         await app.create_member("a")
         await app.create_member("b")
