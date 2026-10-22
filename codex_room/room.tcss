@@ -3,6 +3,7 @@ Screen {
     color: #d1d4cd;
     min-width: 60;
 }
+Screen > .screen--selection { background: #e9dfb8; color: #20251f; }
 
 #workspace { height: 1fr; }
 #main { width: 1fr; padding: 1 2 0 2; }

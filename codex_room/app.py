@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
@@ -29,6 +30,7 @@ from .transcript import Entry, ReplyBlock, format_duration, render_reply
 from .colors import COLOR_CHOICES, choose_color, member_colors, normalize_color
 from .member_config import parse_add, resolve_directory
 from .completion import Completion, CompletionEngine
+from .selectable import SelectableStatic
 
 
 MUTED = "#788294"
@@ -121,7 +123,7 @@ class MessageCard(Vertical):
         self.started_at = monotonic()
         self.animation_frame = 0
         self.header = Static(classes="message-header")
-        self.body = Static(classes="message-body")
+        self.body = SelectableStatic(classes="message-body")
         self.progress = Static(classes="working-status")
         self.work_summary = Static(classes="work-summary")
         self.refresh_entry()
@@ -379,7 +381,8 @@ class CodexRoom(App):
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
         Binding("ctrl+q", "quit", "退出", priority=True),
-        Binding("ctrl+c", "quit", "退出", priority=True, show=False),
+        Binding("ctrl+c", "copy_or_quit", "复制 / 退出", priority=True, show=False),
+        Binding("super+c,ctrl+shift+c", "copy_selection", "复制选中文字", priority=True, show=False),
         Binding("ctrl+n", "add_member", "添加成员", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "成员", priority=True),
         Binding("ctrl+l", "toggle_view", "全部 / 单人", priority=True),
@@ -398,6 +401,7 @@ class CodexRoom(App):
             super().__init__(driver_class=RoomDriver)
         else:
             super().__init__()
+        self.scroll_sensitivity_y = 1.0
         self.agents: dict[str, Agent] = {}
         self.selected = ""
         self.show_all = True
@@ -497,7 +501,8 @@ class CodexRoom(App):
         self.call_after_refresh(self.scroll_bottom)
 
     def on_app_focus(self) -> None:
-        if hasattr(self, "room_screen") and self.screen is self.room_screen:
+        if (hasattr(self, "room_screen") and self.screen is self.room_screen
+                and not self.room_screen.get_selected_text()):
             self.action_composer()
 
     def on_click(self, event: events.Click) -> None:
@@ -687,7 +692,9 @@ class CodexRoom(App):
                 recipient.append(f" · {busy} 人工作中", style="#e8b878")
         else:
             recipient.append(f"未找到 @{name} · 可以先 /add {name}" if self.agents else "暂无 Codex · /add 名字 或 Ctrl+N 创建", style=MUTED)
-        if self.completion_open:
+        if self.room_screen.selections:
+            recipient = Text("Ctrl+C 复制选中文字 · Esc 取消", style=MUTED)
+        elif self.completion_open:
             recipient = Text("↑↓ 选择 · Tab / Enter 补全 · Esc 关闭", style=MUTED)
         elif value.startswith("/"):
             recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /help", style=MUTED)
@@ -707,7 +714,7 @@ class CodexRoom(App):
         self.cards[id(entry)] = card
         card.display = self.entry_visible(entry)
         timeline = self.room_screen.query_one("#timeline", VerticalScroll)
-        follow = timeline.is_vertical_scroll_end
+        follow = timeline.is_vertical_scroll_end and not self.room_screen.selections
         await timeline.mount(card)
         if follow or entry.sender == "you":
             self.call_after_refresh(self.scroll_bottom)
@@ -744,7 +751,34 @@ class CodexRoom(App):
             self.select(names[index], single=True)
 
     def action_composer(self) -> None:
+        self.room_screen.clear_selection()
         self.room_screen.query_one("#message-input", Input).focus()
+
+    async def action_copy_selection(self) -> bool:
+        text = self.screen.get_selected_text()
+        if not text and isinstance(self.focused, Input) and not self.focused.password:
+            text = self.focused.selected_text
+        if not text:
+            return False
+        self.copy_to_clipboard(text)
+        if sys.platform == "darwin" and not self.is_headless:
+            # Local macOS clipboard also works when an embedded terminal ignores OSC 52.
+            process = None
+            try:
+                process = await asyncio.create_subprocess_exec("pbcopy", stdin=asyncio.subprocess.PIPE)
+                await asyncio.wait_for(process.communicate(text.encode("utf-8")), 2)
+            except (OSError, asyncio.TimeoutError):
+                if process is not None and process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
+        return True
+
+    async def action_copy_or_quit(self) -> None:
+        if not await self.action_copy_selection():
+            await self.action_quit()
 
     def action_toggle_view(self) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -1142,7 +1176,8 @@ class CodexRoom(App):
         self.dirty = True
         if not self.is_running or self.shutting_down:
             return
-        follow = self.room_screen.query_one("#timeline", VerticalScroll).is_vertical_scroll_end
+        follow = (self.room_screen.query_one("#timeline", VerticalScroll).is_vertical_scroll_end
+                  and not self.room_screen.selections)
         self.cards[id(answer)].refresh_entry()
         if follow:
             self.call_after_refresh(self.scroll_bottom)

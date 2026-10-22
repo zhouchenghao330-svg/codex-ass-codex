@@ -196,6 +196,18 @@ async def preview() -> None:
         last_reply = next(entry for entry in reversed(app.entries) if entry.sender == "exp")
         assert app.cards[id(last_reply)].work_summary.display
         capture(app, "completed.svg", output)
+        body = app.cards[id(last_reply)].body
+        await pilot.mouse_down(body, offset=(0, 0))
+        await pilot.hover(body, offset=(16, 0))
+        await pilot.mouse_up(body, offset=(16, 0))
+        await pilot.pause()
+        selected = app.screen.get_selected_text()
+        assert selected
+        capture(app, "text-selection.svg", output)
+        await pilot.press("ctrl+c")
+        assert app.clipboard == selected and app.is_running
+        await pilot.press("escape")
+        assert composer.has_focus and not app.screen.get_selected_text()
 
         await pilot.resize_terminal(86, 26)
         await pilot.pause(0.1)
@@ -213,7 +225,7 @@ async def preview() -> None:
         capture(app, "compact-sidebar.svg", output)
         await pilot.click("#close-sidebar")
         assert not app.sidebar_visible
-        print("PASS: routing, parallel replies, queue, stop/restart, mention popup/keys/mouse/filter/no-send, add-member, filters, help, resize, sidebar")
+        print("PASS: routing, parallel replies, queue, stop/restart, completion, add-member, filters, selection/copy, help, resize, sidebar")
         print(f"Screenshots: {output.resolve()}")
 
 
