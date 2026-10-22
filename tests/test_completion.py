@@ -8,7 +8,7 @@ from unittest.mock import patch
 from textual.widgets import Input
 
 from codex_room.app import ComposerInput, Agent, CodexRoom
-from codex_room.completion import CompletionEngine
+from codex_room.completion import CompletionEngine, is_room_command
 from codex_room.member_config import parse_add
 from codex_room.runtime import CodexClient
 
@@ -23,6 +23,21 @@ def client(cwd):
 
 
 class CompletionTests(unittest.TestCase):
+    def test_file_paths_are_text_and_only_exact_registered_names_are_commands(self):
+        engine = CompletionEngine()
+        agents = {"a": Agent("a", "a", "purple")}
+        for text in ("/Users/me/project/doc.md", "/model/config.toml", "/tmp", "/unknown"):
+            with self.subTest(text=text):
+                self.assertFalse(is_room_command(text))
+                for prefix in ("", "@a "):
+                    value = prefix + text
+                    self.assertIsNone(engine.complete(value, len(value), agents, ROOT, []))
+                    self.assertIsNone(engine.complete(value, len(value), agents, ROOT, [], explicit=True))
+        for text in ("/model", "/MODEL test-model", "/permission full", "/permisson full", "/del a"):
+            self.assertTrue(is_room_command(text))
+        for text in ("", "ordinary /model text", "/mem"):
+            self.assertFalse(is_room_command(text))
+
     def test_command_contexts_use_members_catalog_permissions_and_unoccupied_colors(self):
         engine = CompletionEngine()
         agents = {"a": Agent("a", "a", "purple"), "b": Agent("b", "b", "mint", model="custom-model")}
@@ -74,6 +89,31 @@ class CompletionTests(unittest.TestCase):
 
 
 class CompletionUITests(unittest.IsolatedAsyncioTestCase):
+    async def test_absolute_paths_with_and_without_mention_reach_codex_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("codex_room.app.CodexClient", client):
+            app = CodexRoom(cwd=ROOT, state_dir=Path(tmp))
+            async with app.run_test(size=(100, 36)) as pilot:
+                await app.connection_task
+                await app.submit("/add a")
+                composer = app.query_one("#message-input", ComposerInput)
+                messages = ("/Users/me/orca/build-mcp/docs/experiment.md 你看下这个内容，和 query_sql_workflow 相比？",
+                            "@a /Users/me/My Project/experiment.md 请读这份文件",
+                            "/tmp", "@a /model/config.toml 请读这个配置")
+                for message in messages:
+                    composer.value = message
+                    composer.cursor_position = len(message)
+                    await pilot.pause()
+                    self.assertFalse(app.completion_open)
+                    await pilot.press("enter")
+                    await app.tasks["a"]
+                    expected = message.removeprefix("@a ")
+                    own, reply = app.agents["a"].history[-2:]
+                    self.assertEqual(own.body, expected)
+                    self.assertIn(expected, reply.body)
+                    self.assertEqual(composer.value, "")
+                self.assertTrue(await app.submit("@a /permissions read-only"))
+                self.assertEqual(app.agents["a"].permission, "read-only")
+
     async def test_tab_completion_member_selection_and_settings_do_not_execute_early(self):
         with tempfile.TemporaryDirectory() as tmp, patch("codex_room.app.CodexClient", client):
             app = CodexRoom(cwd=ROOT, state_dir=Path(tmp))

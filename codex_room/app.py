@@ -30,8 +30,8 @@ from .storage import RoomStore
 from .transcript import Entry, ReplyBlock, format_duration, render_reply
 from .colors import COLOR_CHOICES, choose_color, member_colors, normalize_color
 from .member_config import parse_add, resolve_directory
-from .completion import Completion, CompletionEngine
-from .selectable import SelectableStatic
+from .completion import Completion, CompletionEngine, is_room_command
+from .selectable import ConversationScreen, SelectableStatic
 from .composer import ComposerInput
 from .rendering import ReplyVisual
 
@@ -416,6 +416,9 @@ class CodexRoom(App):
         Binding("escape", "composer", "输入", show=False),
     ]
 
+    def get_default_screen(self) -> ConversationScreen:
+        return ConversationScreen(id="_default")
+
     def __init__(self, *, demo: bool = False, speed: float = 1.0,
                  cwd: Path | None = None, state_dir: Path | None = None) -> None:
         if os.name == "posix":
@@ -528,7 +531,7 @@ class CodexRoom(App):
 
     def on_app_focus(self) -> None:
         if (hasattr(self, "room_screen") and self.screen is self.room_screen
-                and not self.room_screen.get_selected_text()):
+                and not self.room_screen.selections):
             self.action_composer()
 
     def on_click(self, event: events.Click) -> None:
@@ -540,7 +543,7 @@ class CodexRoom(App):
             return
         if event.style and (event.style.link or event.style.meta.get("@click")):
             return
-        if not self.screen.get_selected_text():
+        if not self.screen.selections:
             self.action_composer()
 
     def on_key(self, event: events.Key) -> None:
@@ -724,7 +727,7 @@ class CodexRoom(App):
             recipient = Text("Ctrl+C 复制选中文字 · Esc 取消", style=MUTED)
         elif self.completion_open:
             recipient = Text("↑↓ 选择 · Tab / Enter 补全 · Esc 关闭", style=MUTED)
-        elif value.startswith("/"):
+        elif is_room_command(value):
             recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /del  /help", style=MUTED)
         self.room_screen.query_one("#recipient", Static).update(recipient)
         self.room_screen.query_one("#message-input", ComposerInput).placeholder = f"给 @{self.selected} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
@@ -931,7 +934,7 @@ class CodexRoom(App):
             self.action_toggle_sidebar()
 
     async def submit(self, value: str) -> bool:
-        if value.startswith("/"):
+        if is_room_command(value):
             return await self.command(value)
         name, body = self.selected, value
         if value.startswith("@"):
@@ -943,7 +946,7 @@ class CodexRoom(App):
         if name not in self.agents:
             self.notify(f"没有 @{name}，可以用 /add {name} 创建。" if name else "先用 /add 名字 或 Ctrl+N 创建 Codex。", severity="warning")
             return False
-        if body.startswith("/"):
+        if is_room_command(body):
             accepted = await self.command(body, target=name)
             if accepted and name in self.agents:
                 self.select(name)

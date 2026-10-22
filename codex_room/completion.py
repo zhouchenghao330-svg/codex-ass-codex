@@ -24,8 +24,15 @@ COMMANDS = (
     ("/quit", "退出"),
 )
 ALIASES = {"/permission": "/permissions", "/permisson": "/permissions"}
+COMMAND_NAMES = frozenset(name for name, _ in COMMANDS) | ALIASES.keys() | {"/demo"}
 PERMISSIONS = (("full", "Full Access"), ("workspace", "工作区读写"), ("read-only", "只读"))
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def is_room_command(text: str) -> bool:
+    """Only complete, registered command names are local commands; paths are text."""
+    words = text.split(maxsplit=1)
+    return bool(words and words[0].lower() in COMMAND_NAMES)
 
 
 @dataclass(frozen=True)
@@ -154,6 +161,8 @@ class CompletionEngine:
                 kind = "command"
                 prefix = ALIASES.get(query.lower(), query.lower())
                 candidates = [Candidate(name, detail) for name, detail in COMMANDS if name.startswith(prefix)]
+                if not candidates:
+                    return None
             elif before:
                 command, *arguments = before
                 command = ALIASES.get(command.lower(), command.lower())

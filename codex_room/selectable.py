@@ -1,15 +1,19 @@
 """Add selection coordinates and highlighting to rendered Markdown/tool output."""
 from __future__ import annotations
 
+from dataclasses import replace
+
+from rich.cells import get_character_cell_size
 from rich.segment import Segment
 from rich.style import Style as RichStyle
 from textual import events
-from textual.geometry import Offset
-from textual.selection import Selection
+from textual.geometry import Offset, Region
+from textual.screen import Screen
+from textual.selection import Selection, SelectState
 from textual.strip import Strip
 from textual.visual import RichVisual, Visual
 from textual.widgets import Static
-from .rendering import ReplyVisual
+from .rendering import CachedVisual, ReplyVisual
 
 
 # Match the default word separators in Orca's bundled xterm terminal.
@@ -51,10 +55,11 @@ def highlight(strip: Strip, start: int, end: int, style: RichStyle) -> Strip:
 
 class SelectableVisual(Visual):
     def __init__(self, source: Visual) -> None:
-        self.source = source
+        self.source = CachedVisual(source) if isinstance(source, RichVisual) else source
         self.lines: tuple[str, ...] = ()
         self._raw_strips = None
         self._offset_strips = None
+        self._highlighted_lines = {}
 
     def get_optimal_width(self, rules, container_width):
         return self.source.get_optimal_width(rules, container_width)
@@ -63,22 +68,31 @@ class SelectableVisual(Visual):
         return self.source.get_height(rules, width)
 
     def render_strips(self, width, height, style, options):
-        strips = self.source.render_strips(width, height, style, options)
+        strips = self.source.render_strips(width, height, style,
+            replace(options, selection=None, selection_style=None))
         if strips is not self._raw_strips:
             self._raw_strips = strips
             self.lines = tuple(strip.text.rstrip() for strip in strips)
             self._offset_strips = [strip.apply_offsets(0, y) for y, strip in enumerate(strips)]
-        if options.selection is None:
+            self._highlighted_lines.clear()
+        if options.selection is None or options.selection_style is None:
             return self._offset_strips
-        result = []
-        for y, strip in enumerate(strips):
-            if options.selection is not None and options.selection_style is not None:
-                span = options.selection.get_span(y)
-                if span is not None:
-                    start, end = span
-                    end = len(strip.text) if end < 0 else end
-                    strip = highlight(strip, start, end, options.selection_style.rich_style)
-            result.append(strip.apply_offsets(0, y))
+        # A pointer movement must not recreate offsets for thousands of untouched
+        # output lines. Keep the base strips and only replace the selected rows.
+        result = self._offset_strips.copy()
+        selection = options.selection
+        first = max(0, selection.start.y) if selection.start is not None else 0
+        last = min(len(strips), selection.end.y + 1) if selection.end is not None else len(strips)
+        rich_style = options.selection_style.rich_style
+        for y in range(first, last):
+            start, end = selection.get_span(y)
+            end = len(strips[y].text) if end < 0 else end
+            key = (start, end, rich_style)
+            cached = self._highlighted_lines.get(y)
+            if cached is None or cached[0] != key:
+                cached = (key, highlight(strips[y], start, end, rich_style).apply_offsets(0, y))
+                self._highlighted_lines[y] = cached
+            result[y] = cached[1]
         return result
 
 
@@ -87,7 +101,56 @@ class SelectableStatic(Static):
 
     def render(self):
         visual = super().render()
-        return SelectableVisual(visual) if isinstance(visual, (RichVisual, ReplyVisual)) else visual
+        if not isinstance(visual, (RichVisual, ReplyVisual)):
+            return visual
+        cached = getattr(self, "_selectable_visual", None)
+        if cached is None or cached[0] is not visual:
+            cached = self._selectable_visual = (visual, SelectableVisual(visual))
+        return cached[1]
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        previous = getattr(self, "_last_selection", None)
+        self._last_selection = selection
+        if previous == selection:
+            return
+        if not isinstance(self._render(), SelectableVisual):
+            # Textual Content keeps logical offsets across wrapped lines; its
+            # selected rows need not have the same y as their displayed rows.
+            super().selection_updated(selection)
+            return
+        regions = []
+        for selected in (previous, selection):
+            if selected is None:
+                continue
+            first = max(0, selected.start.y) if selected.start is not None else 0
+            last = min(self.size.height, selected.end.y + 1) if selected.end is not None else self.size.height
+            if last > first:
+                regions.append(Region(0, first, self.size.width, last - first))
+        if regions:
+            self.refresh(*regions)
+
+    def character_offset_at(self, x: int, y: int) -> Offset | None:
+        """Map both cells of a wide glyph to that glyph, without rounding up."""
+        x -= self.content_region.x
+        y -= self.content_region.y
+        if x < 0 or y < 0 or y >= self.size.height:
+            return None
+        cell = 0
+        end = None
+        for segment in self.render_line(y):
+            offset = segment.style.meta.get("offset") if segment.style is not None else None
+            for index, character in enumerate(segment.text):
+                next_cell = cell + get_character_cell_size(character)
+                if offset is not None and offset[1] is not None:
+                    end = Offset(offset[0] + index + 1, offset[1])
+                    if cell <= x < next_cell:
+                        return Offset(offset[0] + index, offset[1])
+                cell = next_cell
+        if end is None and isinstance(self._render(), SelectableVisual):
+            # An empty rendered row is still a precise endpoint. Returning None
+            # makes Textual fall back to selecting the whole content widget.
+            return Offset(0, y)
+        return end
 
     def selection_lines(self) -> tuple[str, ...]:
         visual = self._render()
@@ -122,4 +185,68 @@ class SelectableStatic(Static):
         visual = self._render()
         if not isinstance(visual, SelectableVisual):
             return super().get_selection(selection)
-        return selection.extract("\n".join(self.selection_lines())), "\n"
+        lines = self.selection_lines()
+        start = selection.start or Offset(0, 0)
+        end = selection.end or Offset(len(lines[-1]) if lines else 0, len(lines) - 1)
+        selected = list(lines[start.y:end.y + 1])
+        if not selected:
+            return "", "\n"
+        if len(selected) == 1:
+            return selected[0][start.x:end.x] if start.y == end.y else selected[0][start.x:], "\n"
+        selected[0] = selected[0][start.x:]
+        if end.y < len(lines):
+            selected[-1] = selected[-1][:end.x]
+        return "\n".join(selected), "\n"
+
+
+class ConversationScreen(Screen):
+    """Use character boundaries for dragging, and clear on an outside press."""
+
+    def get_widget_and_offset_at(self, x: int, y: int):
+        widget, offset = super().get_widget_and_offset_at(x, y)
+        if isinstance(widget, SelectableStatic):
+            offset = widget.character_offset_at(x, y)
+        return widget, offset
+
+    def _inside_selection(self, x: int, y: int) -> bool:
+        widget, offset = self.get_widget_and_offset_at(x, y)
+        selection = self.selections.get(widget)
+        if (selection is None or offset is None
+                or Offset(x, y) not in widget.content_region):
+            return False
+        span = selection.get_span(offset.y)
+        if span is None:
+            return False
+        start, end = span
+        if end < 0:
+            # A click in the blank space after the text is outside the highlight.
+            lines = widget.selection_lines() if isinstance(widget, SelectableStatic) else ()
+            end = len(lines[offset.y]) if offset.y < len(lines) else 0
+        return start <= offset.x < end
+
+    def _forward_event(self, event: events.Event) -> None:
+        if not event.is_forwarded:
+            if isinstance(event, events.MouseDown) and event.button == 1:
+                self._selection_press = None
+                if self.selections:
+                    if self._inside_selection(event.screen_x, event.screen_y):
+                        self._selection_press = (event.screen_offset, self.selections.copy())
+                    else:
+                        self.clear_selection()
+            elif isinstance(event, events.MouseUp) and event.button == 1:
+                press = getattr(self, "_selection_press", None)
+                self._selection_press = None
+                if press is not None and press[0] == event.screen_offset:
+                    self.selections = press[1]
+                    self._mouse_down_offset = None
+        super()._forward_event(event)
+
+    def _watch__select_state(self, state: SelectState | None) -> None:
+        if (state is not None and state.end is not None
+                and state.is_single_content_widget and state.is_attached_to_dom()):
+            self._selecting = True
+            start, end = state.content_offsets
+            self.selections = ({state.start.content_widget: Selection(start, end)}
+                               if start != end else {})
+            return
+        super()._watch__select_state(state)

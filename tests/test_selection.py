@@ -4,10 +4,12 @@ from unittest.mock import patch
 
 from rich.cells import cell_len
 from textual import events
-from textual.geometry import Region
+from textual.geometry import Offset, Region
+from textual.selection import Selection
 from textual.widgets import Input
 
 from codex_room.app import ComposerInput, CodexRoom
+from codex_room.selectable import highlight
 from codex_room.transcript import Entry, ReplyBlock
 
 
@@ -57,7 +59,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
 
             await pilot.double_click(card.body, offset=(card.body.size.width - 2, 0))
             self.assertFalse(app.screen.get_selected_text())
-            await drag(pilot, card.body, (0, 0), (2, 0))
+            await drag(pilot, card.body, (0, 0), (4, 0))
             self.assertEqual(app.screen.get_selected_text(), "第一")
 
     async def test_double_click_code_and_user_message_selects_word_not_whole_widget(self):
@@ -92,7 +94,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             composer.value = "draft"
             composer.cursor_position = 2
             await pilot.pause()
-            await drag(pilot, card.body, (0, 0), (7, 0))
+            await drag(pilot, card.body, (0, 0), (10, 0))
             self.assertEqual(app.screen.get_selected_text(), "你好，可以")
             self.assertFalse(composer.has_focus)
             strips = card.body.render_lines(Region(0, 0, card.body.size.width, 1))
@@ -141,7 +143,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("ctrl+shift+c")
             self.assertEqual(app.clipboard, selected)
             app.screen.clear_selection()
-            await drag(pilot, first.body, (10, 0), (6, 0))
+            await drag(pilot, first.body, (11, 0), (6, 0))
             self.assertEqual(app.screen.get_selected_text(), "parag")
 
             app.screen.clear_selection()
@@ -178,6 +180,97 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.clipboard, "selected draft")
             await pilot.press("right", "ctrl+c")
             self.assertFalse(app.is_running)
+
+    async def test_drag_has_exact_end_boundary_in_both_directions_and_wide_cells(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("a", "alpha beta gamma\n\n甲乙丙丁 ABC"))
+            await pilot.pause()
+            for start, end in (((6, 0), (10, 0)), ((10, 0), (6, 0))):
+                await drag(pilot, card.body, start, end)
+                self.assertEqual(app.screen.get_selected_text(), "beta")
+            lines = card.body.selection_lines()
+            y = next(i for i, line in enumerate(lines) if "甲乙" in line)
+            await drag(pilot, card.body, (6, 0), (0, y - 1))
+            self.assertEqual(app.screen.get_selected_text(), "beta gamma")
+            await drag(pilot, card.body, (0, y - 1), (4, y))
+            self.assertEqual(app.screen.get_selected_text(), "\n甲乙")
+            # Both cells of 乙 map to 乙, rather than rounding up to 丙.
+            for end in (2, 3):
+                await drag(pilot, card.body, (0, y), (end, y))
+                self.assertEqual(app.screen.get_selected_text(), "甲")
+            await drag(pilot, card.body, (4, y), (0, y))
+            self.assertEqual(app.screen.get_selected_text(), "甲乙")
+            await pilot.double_click(card.body, offset=(1, y))
+            self.assertEqual(app.screen.get_selected_text(), "甲乙丙丁")
+
+    async def test_outside_press_clears_immediately_and_inside_click_preserves_selection(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("a", "alpha beta gamma\n\n甲乙丙丁 ABC"))
+            composer = app.query_one("#message-input", ComposerInput)
+            composer.value = "keep draft"
+            composer.cursor_position = 4
+            await pilot.pause()
+            await drag(pilot, card.body, (6, 0), (10, 0))
+            await pilot.click(card.body, offset=(8, 0))
+            self.assertEqual(app.screen.get_selected_text(), "beta")
+            # Same row and widget; just one character outside the highlighted span.
+            await pilot.mouse_down(card.body, offset=(10, 0))
+            self.assertFalse(app.screen.selections)
+            await pilot._post_mouse_events([events.MouseUp, events.Click], card.body, (10, 0), button=1)
+            await pilot.pause()
+            self.assertTrue(composer.has_focus)
+            self.assertEqual((composer.value, composer.cursor_position), ("keep draft", 4))
+
+            lines = card.body.selection_lines()
+            y = next(i for i, line in enumerate(lines) if "甲乙" in line)
+            await drag(pilot, card.body, (0, y), (4, y))
+            await pilot.click(card.body, offset=(3, y))
+            self.assertEqual(app.screen.get_selected_text(), "甲乙")
+            await pilot.mouse_down(card.body, offset=(4, y))
+            self.assertFalse(app.screen.selections)
+            await pilot.mouse_up(card.body, offset=(4, y))
+
+            for target, offset in ((card.body, (60, 0)), (card.header, (2, 0)),
+                                   ("#toggle-sidebar", (2, 0))):
+                card.body.text_select_all()
+                await pilot.pause()
+                await pilot.mouse_down(target, offset=offset)
+                self.assertFalse(app.screen.selections)
+                await pilot._post_mouse_events([events.MouseUp, events.Click], target, offset, button=1)
+                await pilot.pause()
+            self.assertTrue(app.sidebar_visible)
+
+    async def test_small_selection_reuses_unselected_rows_of_long_output(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            entry = Entry("a", "", blocks=[ReplyBlock("tool", "command",
+                "\n".join(f"line {i}: example output" for i in range(2000)), "cat output", "completed", 0)])
+            card = await app.add_entry(entry)
+            card.tools_expanded = True
+            card.refresh_entry()
+            await pilot.pause()
+            body = card.body
+            visual = body._render()
+            body.render_line(0)
+            untouched = visual._offset_strips[1000]
+            with patch("codex_room.selectable.highlight", wraps=highlight) as paint:
+                for end in (3, 4, 5):
+                    selection = Selection(Offset(0, 0), Offset(end, 0))
+                    app.screen.selections = {body: selection}
+                    body.selection_updated(selection)
+                    body.render_line(0)
+                    self.assertIs(body._render(), visual)
+                    self.assertIs(body._render_cache.lines[1000], untouched)
+                self.assertEqual(paint.call_count, 3)
+            app.screen.clear_selection()
+            body.selection_updated(None)
+            body.render_line(0)
+            self.assertIs(body._render_cache.lines[0], visual._offset_strips[0])
 
     async def test_wheel_over_a_reply_moves_one_line_in_each_direction(self):
         app = CodexRoom(demo=True)
