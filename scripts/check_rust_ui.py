@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from wcwidth import wcswidth
 
 from check_terminal_lab import Session, ROOT
 
@@ -24,7 +25,7 @@ class RustUITests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cwd = Path(self.tmp.name)
-        self.previous = {key: os.environ.get(key) for key in ("CODEX_ROOM_ROOT","CODEX_ROOM_PYTHON","CODEX_ROOM_CODEX_COMMAND","NO_COLOR")}
+        self.previous = {key: os.environ.get(key) for key in ("CODEX_ROOM_ROOT","CODEX_ROOM_PYTHON","CODEX_ROOM_CODEX_COMMAND","NO_COLOR","PATH","CODEX_ROOM_COPY_CAPTURE")}
         os.environ.pop("NO_COLOR",None)
         os.environ.update(CODEX_ROOM_ROOT=str(ROOT),CODEX_ROOM_PYTHON=str(ROOT/".venv/bin/python"),
                           CODEX_ROOM_CODEX_COMMAND=json.dumps([str(ROOT/".venv/bin/python"),str(ROOT/"tests/fake_codex.py")]))
@@ -67,6 +68,73 @@ class RustUITests(unittest.TestCase):
 
     def finish(self):
         self.assertEqual(self.session.finish(),0)
+        self.assert_keyboard_restored()
+
+    def assert_keyboard_restored(self):
+        output = self.session.output
+        self.assertEqual(output.count(b"\x1b[>1u"), 1)
+        self.assertEqual(output.count(b"\x1b[<1u"), 1)
+        self.assertLess(output.index(b"\x1b[<1u"), output.index(b"\x1b[?1049l"))
+        self.assertNotIn(b"\x1b[>9u", output)  # Do not encode every ordinary key.
+
+    def test_macos_command_copy_replaces_stale_text_and_button_copies_current_selection(self):
+        # Capture helper stdin instead of touching the user's actual clipboard.
+        helpers = self.cwd/"copy-helpers"
+        helpers.mkdir()
+        captured = self.cwd/"copied.txt"
+        captured.write_text("Room 公开消息工具")
+        for name in ("pbcopy", "wl-copy", "xclip", "clip.exe"):
+            helper = helpers/name
+            helper.write_text('#!/bin/sh\n/bin/cat > "$CODEX_ROOM_COPY_CAPTURE"\n')
+            helper.chmod(0o755)
+        os.environ["PATH"] = str(helpers) + os.pathsep + os.environ["PATH"]
+        os.environ["CODEX_ROOM_COPY_CAPTURE"] = str(captured)
+        directory = self.cwd/".codex-room"
+        directory.mkdir()
+        first, second = "FIRST_中文_Alpha", "SECOND_中文_Beta"
+        entries = [{"id":str(n), "sender":"A", "body":text, "state":"done"}
+                   for n, text in enumerate(("Room 公开消息工具", first, second))]
+        (directory/"state.json").write_text(json.dumps({"version":2,"agents":[{
+            "name":"A","label":"A","color":"#afb4ff","cwd":str(self.cwd)}],
+            "entries":entries,"selected":"A","show_all":False}))
+        self.start(columns=110, rows=34)
+        self.session.wait(lambda:second in self.session.visible)
+
+        def select(text):
+            row = self.row(text)
+            line = self.session.visible.splitlines()[row]
+            start = wcswidth(line[:line.index(text)])
+            end = start + wcswidth(text)
+            self.session.send(f"\x1b[<0;{start+1};{row+1}M\x1b[<32;{end+1};{row+1}M\x1b[<0;{end+1};{row+1}m".encode())
+            self.session.read(.04)
+
+        def copied(text):
+            self.session.wait(lambda:captured.read_text() == text)
+
+        select(first)
+        self.session.send(b"\x1b[99;9u")  # Cmd+C, emitted by a Kitty-compatible macOS terminal.
+        copied(first)
+        select(second)
+        self.session.send(b"\x1b[99;9u")
+        copied(second)
+        select("中文")
+        self.click(67, 33)  # Footer Copy must not dismiss the text selection.
+        copied("中文")
+        select(first)
+        self.session.send(b"\x03")  # Existing Ctrl+C continues to copy.
+        copied(first)
+        select(second)
+        self.session.send(b"\x1b[67;6u")  # Ctrl+Shift+C.
+        copied(second)
+        self.session.send(b"\x1b")
+        self.session.read(.05)
+        self.session.send(b"\x1b[99;9u")
+        self.session.wait(lambda:"先拖选" in self.session.visible)
+        self.assertIsNone(self.session.process.poll())
+        self.assertEqual(captured.read_text(), second)
+        self.session.send(b"\x03")  # Only plain Ctrl+C with no selection exits.
+        self.assertEqual(self.session.finish(send_quit=False), 0)
+        self.assert_keyboard_restored()
 
     def test_footer_member_switch_reaches_latest_after_scrolling_and_reselect(self):
         agents = [{"name": name, "label": name, "color": "#78d8bc", "cwd": str(self.cwd)} for name in ("A", "B", "C")]

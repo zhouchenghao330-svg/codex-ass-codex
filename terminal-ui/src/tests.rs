@@ -24,6 +24,41 @@ fn select_rows(app: &mut App, first: usize, a: usize, last: usize, b: usize) {
     });
 }
 #[test]
+fn copy_shortcuts_accept_macos_command_and_control_without_plain_c() {
+    for modifiers in [
+        KeyModifiers::SUPER,
+        KeyModifiers::META,
+        KeyModifiers::CONTROL,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ] {
+        assert!(is_copy_key(KeyEvent::new(KeyCode::Char('c'), modifiers)));
+        assert!(is_copy_key(KeyEvent::new(KeyCode::Char('C'), modifiers)));
+    }
+    assert!(!is_copy_key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::NONE
+    )));
+    assert!(!is_copy_key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::ALT
+    )));
+    assert!(!is_copy_key(KeyEvent::new(
+        KeyCode::Char('v'),
+        KeyModifiers::SUPER
+    )));
+}
+#[test]
+fn command_copy_with_no_selection_keeps_app_and_draft() {
+    let mut app = app(vec![]);
+    app.draft.input.insert("尚未发送");
+    app.copy_selection(false);
+    assert!(!app.quit);
+    assert_eq!(app.draft.input.text, "尚未发送");
+    assert!(app.notice.contains("先拖选"));
+    app.copy_selection(true);
+    assert!(app.quit);
+}
+#[test]
 fn member_name_search_is_not_confused_by_another_members_directory() {
     let app = app(vec![]);
     let items = app.member_items();

@@ -34,7 +34,7 @@ use std::{
 use timeline::{Timeline, color, duration, string};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const HELP: &str = "Codex Room · Rust Fullscreen\n\n/add 名字 [目录] [--color blue]   创建成员\n/rename 原名 新名   /del 名字\n/focus 名字   /focus all   /stop 名字\n/model [模型] [强度]   /permissions\n/reconnect   /quit\n\n开头 @a @b 同时发送，各自独立处理；忙时追加到当前轮。\nTab 补全命令、成员、模型、目录、颜色；↑/↓ 选候选。\n空输入框 ↑/↓ 翻历史；Ctrl+J / Shift+Enter 换行。\n长粘贴和图片是块，退格整块删除；Alt+Enter 展开长文本。\nCtrl+Z / Ctrl+Y 撤销 / 重做；Ctrl+U 清空输入。\n\nCtrl+B 成员栏；Ctrl+L 全部/单人；Ctrl+N 创建。\n拖选只覆盖正文；双击片段，三击行；点高亮外取消。\nCtrl+C 复制选区，无选区时退出；Ctrl+Q 始终退出。\n拖到边缘自动滚动；滚轮每次 1 行；Ctrl+End 到底部。\n标题点击折叠回复；工具标题点击展开/收起摘要。\n单项点击查看详情；Ctrl+T 切换可见工具摘要。\nCtrl+F 转发选区，含跨过的折叠详情；Esc 取消。\n\n主界面为 Rust；Codex 通信与兼容存储由本地 Python 服务负责。\n原生子代理由父代理通过自然语言创建，自动加入成员。\n可直接 @子代理 续聊；V2 经父代理转交，展示子代理原话。\n子代理支持停止、归档删除和恢复；模型与权限由父会话管理。\n\n独立成员也可公开协作：让 A 用 Room 消息工具联系 B。\n互发原文显示为 A → B 卡片，支持折叠、复制和转发。\n对方忙时追加，空闲时启动；不自动切走视图。\n/stop 拦截旧链后续消息；每条链最多 12 条，避免空转。";
+const HELP: &str = "Codex Room · Rust Fullscreen\n\n/add 名字 [目录] [--color blue]   创建成员\n/rename 原名 新名   /del 名字\n/focus 名字   /focus all   /stop 名字\n/model [模型] [强度]   /permissions\n/reconnect   /quit\n\n开头 @a @b 同时发送，各自独立处理；忙时追加到当前轮。\nTab 补全命令、成员、模型、目录、颜色；↑/↓ 选候选。\n空输入框 ↑/↓ 翻历史；Ctrl+J / Shift+Enter 换行。\n长粘贴和图片是块，退格整块删除；Alt+Enter 展开长文本。\nCtrl+Z / Ctrl+Y 撤销 / 重做；Ctrl+U 清空输入。\n\nCtrl+B 成员栏；Ctrl+L 全部/单人；Ctrl+N 创建。\n拖选只覆盖正文；双击片段，三击行；点高亮外取消。\n⌘C / Ctrl+C / Ctrl+Shift+C 复制选区；底部也有「复制」。\n无选区时仅 Ctrl+C 退出；⌘C 保留程序；Ctrl+Q 始终退出。\n拖到边缘自动滚动；滚轮每次 1 行；Ctrl+End 到底部。\n标题点击折叠回复；工具标题点击展开/收起摘要。\n单项点击查看详情；Ctrl+T 切换可见工具摘要。\nCtrl+F 转发选区，含跨过的折叠详情；Esc 取消。\n\n主界面为 Rust；Codex 通信与兼容存储由本地 Python 服务负责。\n原生子代理由父代理通过自然语言创建，自动加入成员。\n可直接 @子代理 续聊；V2 经父代理转交，展示子代理原话。\n子代理支持停止、归档删除和恢复；模型与权限由父会话管理。\n\n独立成员也可公开协作：让 A 用 Room 消息工具联系 B。\n互发原文显示为 A → B 卡片，支持折叠、复制和转发。\n对方忙时追加，空闲时启动；不自动切走视图。\n/stop 拦截旧链后续消息；每条链最多 12 条，避免空转。";
 
 #[derive(Clone, Default)]
 struct Draft {
@@ -888,6 +888,21 @@ impl App {
         }
         parts.join("\n")
     }
+    fn copy_selection(&mut self, quit_if_empty: bool) {
+        let text = self.selected_text();
+        if text.is_empty() {
+            if quit_if_empty {
+                self.quit = true;
+            } else {
+                self.notice("先拖选需要复制的文字".into());
+            }
+            return;
+        }
+        match copy(&text) {
+            Ok(()) => self.notice(format!("已复制 {} 字符", text.chars().count())),
+            Err(e) => self.notice(format!("复制失败：{e}")),
+        }
+    }
     fn forward(&mut self) {
         let Some(quote) = self.quote() else {
             self.notice("先拖选需要转发的对话".into());
@@ -1089,8 +1104,12 @@ impl App {
                     self.return_source(bridge);
                 } else if local_x < 57 {
                     self.open_interaction();
-                } else {
+                } else if local_x < 65 {
                     self.help();
+                } else if local_x < 73 {
+                    self.copy_selection(false);
+                } else {
+                    self.clear_selection();
                 }
                 return Ok(());
             }
@@ -1421,17 +1440,18 @@ impl App {
         if self.modal.is_some() {
             return self.modal_key(key, bridge);
         }
+        // Unhandled macOS commands must not become literal draft characters
+        // now that the terminal reports Super/Meta keys to the application.
+        if key
+            .modifiers
+            .intersects(KeyModifiers::SUPER | KeyModifiers::META)
+            && !is_copy_key(key)
+        {
+            return Ok(());
+        }
         match key.code {
-            KeyCode::Char('c') if ctrl => {
-                let text = self.selected_text();
-                if text.is_empty() {
-                    self.quit = true;
-                } else {
-                    match copy(&text) {
-                        Ok(()) => self.notice(format!("已复制 {} 字符", text.chars().count())),
-                        Err(e) => self.notice(format!("复制失败：{e}")),
-                    }
-                }
+            KeyCode::Char('c' | 'C') if is_copy_key(key) => {
+                self.copy_selection(key.modifiers == KeyModifiers::CONTROL)
             }
             KeyCode::Char('f') if ctrl => self.forward(),
             KeyCode::Char('b') if ctrl => {
@@ -1611,7 +1631,12 @@ fn edit_key(input: &mut Input, key: KeyEvent) {
         KeyCode::Char('j') if ctrl => input.insert("\n"),
         KeyCode::Char('a') if ctrl => input.state.cursor = 0,
         KeyCode::Char('e') if ctrl => input.state.cursor = input.text.len(),
-        KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Char(c)
+            if !ctrl
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::META) =>
+        {
             input.insert(&c.to_string())
         }
         KeyCode::Backspace => input.backspace(),
@@ -1622,6 +1647,13 @@ fn edit_key(input: &mut Input, key: KeyEvent) {
         KeyCode::End => input.state.cursor = input.text.len(),
         _ => {}
     }
+}
+fn is_copy_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c' | 'C'))
+        && key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER | KeyModifiers::META)
+        && !key.modifiers.contains(KeyModifiers::ALT)
 }
 fn copy(text: &str) -> io::Result<()> {
     let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
