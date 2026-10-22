@@ -68,6 +68,34 @@ class RustUITests(unittest.TestCase):
     def finish(self):
         self.assertEqual(self.session.finish(),0)
 
+    def test_native_child_original_output_multiround_and_restart(self):
+        os.environ["CODEX_ROOM_CODEX_COMMAND"] = json.dumps([str(ROOT/".venv/bin/python"), str(ROOT/"tests/fake_native_codex.py")])
+        self.start(columns=120, rows=36)
+        self.command("/add A", finish="@A")
+        self.command("spawn")
+        self.session.wait(lambda:"buddy" in self.session.visible)
+        self.command("/focus buddy", finish="CHILD:ORIGINAL_CONTEXT")
+        self.session.wait(lambda:"Worked for" in self.session.visible)
+        self.command("remember PTY_NATIVE_CONTEXT", finish="CHILD:remember PTY_NATIVE_CONTEXT")
+        self.command("recall", finish="CHILD:PTY_NATIVE_CONTEXT")
+        self.command("/focus all")
+        self.assertNotIn("这是 Codex Room 用户", self.session.visible)
+        self.session.send(b"\x02")
+        self.session.wait(lambda:"子代理 · @A" in self.session.visible)
+        self.finish()
+        state = json.loads((self.cwd/".codex-room/state.json").read_text())
+        child = next(a for a in state["agents"] if a.get("parent_name"))
+        keys = [(e["native_thread_id"], e["server_turn_id"]) for e in state["entries"] if e.get("native_thread_id")]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.session.close(); self.session = None
+        self.start(columns=120, rows=36)
+        self.command("/focus buddy", finish="CHILD:PTY_NATIVE_CONTEXT")
+        self.command("recall")
+        self.session.wait(lambda:self.session.visible.count("CHILD:PTY_NATIVE_CONTEXT") >= 2)
+        self.finish()
+        restored = json.loads((self.cwd/".codex-room/state.json").read_text())
+        self.assertEqual(next(a for a in restored["agents"] if a.get("parent_name"))["thread_id"], child["thread_id"])
+
     def test_real_stream_tools_input_history_and_restore(self):
         self.start(columns=110,rows=34)
         self.command("/add 开发",finish="@开发")

@@ -177,7 +177,11 @@ impl App {
                 string(selected, "label"),
                 string(selected, "model"),
                 string(selected, "effort"),
-                string(selected, "permission"),
+                if string(selected, "parent_name").is_empty() {
+                    string(selected, "permission")
+                } else {
+                    "权限由父会话管理"
+                },
                 string(selected, "cwd")
             )
         };
@@ -257,8 +261,18 @@ impl App {
                 let active = string(m, "name") == self.selected && !self.show_all;
                 let marker = if active { "▸" } else { " " };
                 let label = string(m, "label");
+                let parent = self
+                    .members
+                    .iter()
+                    .find(|p| string(p, "name") == string(m, "parent_name"));
                 let lines = vec![
-                    Line::styled(format!("{marker} {label}"), color(string(m, "color"))),
+                    Line::styled(
+                        format!(
+                            "{marker} {}{label}",
+                            if parent.is_some() { "↳ " } else { "" }
+                        ),
+                        color(string(m, "color")),
+                    ),
                     Line::styled(
                         format!(
                             "  {} {}",
@@ -282,10 +296,13 @@ impl App {
                     Line::styled(
                         format!(
                             "  {}",
-                            string(m, "cwd")
-                                .rsplit(['/', '\\'])
-                                .find(|s| !s.is_empty())
-                                .unwrap_or("")
+                            parent
+                                .map(|p| format!("子代理 · @{}", string(p, "label")))
+                                .unwrap_or_else(|| string(m, "cwd")
+                                    .rsplit(['/', '\\'])
+                                    .find(|s| !s.is_empty())
+                                    .unwrap_or("")
+                                    .to_owned())
                         ),
                         MUTED,
                     ),

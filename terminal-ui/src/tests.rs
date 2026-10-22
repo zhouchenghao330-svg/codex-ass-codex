@@ -32,6 +32,32 @@ fn member_name_search_is_not_confused_by_another_members_directory() {
     assert_eq!(found[0].value, "B");
 }
 #[test]
+fn native_children_keep_identity_and_internal_relays_are_hidden() {
+    let mut hidden = entry("internal", "you", "PRIVATE_RELAY_ENVELOPE");
+    hidden["hidden"] = json!(true);
+    let mut app = app(vec![
+        entry("source", "A", "source discussion"),
+        hidden,
+        entry("child", "B", "original child opinion"),
+    ]);
+    app.members[1]["parent_name"] = json!("A");
+    app.show_all = true;
+    app.timeline.invalidate();
+    app.rebuild();
+    assert!(
+        !app.timeline
+            .rows
+            .iter()
+            .any(|r| r.text.contains("PRIVATE_RELAY_ENVELOPE"))
+    );
+    let last = app.timeline.rows.len() - 1;
+    let end = app.timeline.rows[last].text.len();
+    select_rows(&mut app, 0, 0, last, end);
+    let quote = app.quote().unwrap();
+    assert!(!quote.to_string().contains("PRIVATE_RELAY_ENVELOPE"));
+    assert!(app.member_items()[1].detail.contains("子代理 ↳ @A"));
+}
+#[test]
 fn stale_status_updates_do_not_undo_a_new_view_choice() {
     let mut app = app(vec![]);
     app.selected = "B".into();

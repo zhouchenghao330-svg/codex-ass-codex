@@ -34,7 +34,7 @@ use std::{
 use timeline::{Timeline, color, duration, string};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const HELP: &str = "Codex Room · Rust Fullscreen\n\n/add 名字 [目录] [--color blue]   创建成员\n/rename 原名 新名   /del 名字\n/focus 名字   /focus all   /stop 名字\n/model [模型] [强度]   /permissions\n/reconnect   /quit\n\n开头 @a @b 同时发送，各自独立处理；忙时追加到当前轮。\nTab 补全命令、成员、模型、目录、颜色；↑/↓ 选候选。\n空输入框 ↑/↓ 翻历史；Ctrl+J / Shift+Enter 换行。\n长粘贴和图片是块，退格整块删除；Alt+Enter 展开长文本。\nCtrl+Z / Ctrl+Y 撤销 / 重做；Ctrl+U 清空输入。\n\nCtrl+B 成员栏；Ctrl+L 全部/单人；Ctrl+N 创建。\n拖选只覆盖正文；双击片段，三击行；点高亮外取消。\nCtrl+C 复制选区，无选区时退出；Ctrl+Q 始终退出。\n拖到边缘自动滚动；滚轮每次 1 行；Ctrl+End 到底部。\n标题点击折叠回复；工具标题点击展开/收起摘要。\n单项点击查看详情；Ctrl+T 切换可见工具摘要。\nCtrl+F 转发选区，含跨过的折叠详情；Esc 取消。\n\n主界面为 Rust；Codex 通信与兼容存储由本地 Python 服务负责。\n此版本暂不包含原生子代理聊天室。";
+const HELP: &str = "Codex Room · Rust Fullscreen\n\n/add 名字 [目录] [--color blue]   创建成员\n/rename 原名 新名   /del 名字\n/focus 名字   /focus all   /stop 名字\n/model [模型] [强度]   /permissions\n/reconnect   /quit\n\n开头 @a @b 同时发送，各自独立处理；忙时追加到当前轮。\nTab 补全命令、成员、模型、目录、颜色；↑/↓ 选候选。\n空输入框 ↑/↓ 翻历史；Ctrl+J / Shift+Enter 换行。\n长粘贴和图片是块，退格整块删除；Alt+Enter 展开长文本。\nCtrl+Z / Ctrl+Y 撤销 / 重做；Ctrl+U 清空输入。\n\nCtrl+B 成员栏；Ctrl+L 全部/单人；Ctrl+N 创建。\n拖选只覆盖正文；双击片段，三击行；点高亮外取消。\nCtrl+C 复制选区，无选区时退出；Ctrl+Q 始终退出。\n拖到边缘自动滚动；滚轮每次 1 行；Ctrl+End 到底部。\n标题点击折叠回复；工具标题点击展开/收起摘要。\n单项点击查看详情；Ctrl+T 切换可见工具摘要。\nCtrl+F 转发选区，含跨过的折叠详情；Esc 取消。\n\n主界面为 Rust；Codex 通信与兼容存储由本地 Python 服务负责。\n原生子代理由父代理通过自然语言创建，自动加入成员。\n可直接 @子代理 续聊；V2 经父代理转交，展示子代理原话。\n子代理支持停止、归档删除和恢复；模型与权限由父会话管理。";
 
 #[derive(Clone, Default)]
 struct Draft {
@@ -670,7 +670,7 @@ impl App {
         let mut messages = Vec::new();
         for index in indices {
             let e = &self.entries[index];
-            if string(e, "sender") == "system" {
+            if string(e, "sender") == "system" || e["hidden"].as_bool() == Some(true) {
                 continue;
             }
             let entry_rows = rows
@@ -889,13 +889,18 @@ impl App {
             .map(|m| Item {
                 label: format!("@{}", string(m, "label")),
                 detail: format!(
-                    "{} · {}",
+                    "{} · {}{}",
                     if m["busy"].as_bool() == Some(true) {
                         "工作中"
                     } else {
                         "空闲"
                     },
-                    string(m, "cwd")
+                    string(m, "cwd"),
+                    self.members
+                        .iter()
+                        .find(|p| string(p, "name") == string(m, "parent_name"))
+                        .map(|p| format!(" · 子代理 ↳ @{}", string(p, "label")))
+                        .unwrap_or_default()
                 ),
                 value: string(m, "name").into(),
             })

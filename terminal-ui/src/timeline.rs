@@ -57,6 +57,9 @@ impl Timeline {
         changed: &HashSet<String>,
     ) {
         let visible = entries.iter().enumerate().filter(|(_, e)| {
+            if e["hidden"].as_bool() == Some(true) {
+                return false;
+            }
             // An input can be steered before the first visible output. Its empty
             // shell stays in storage but should not become a blank chat card.
             if string(e, "state") == "continued"
@@ -237,12 +240,21 @@ impl Timeline {
         } else {
             let collapsed = e["collapsed"].as_bool().unwrap_or(false);
             let cwd = string(member, "cwd");
+            let parent = members
+                .iter()
+                .find(|m| string(m, "name") == string(member, "parent_name"));
             let heading = Line::from(vec![
                 Span::styled(
                     format!("{} {label}  @{label}", if collapsed { "▸" } else { "▾" }),
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(format!(" · {cwd}"), MUTED),
+                Span::styled(
+                    parent
+                        .map(|p| format!(" · ↳ @{}", string(p, "label")))
+                        .unwrap_or_default(),
+                    MUTED,
+                ),
             ]);
             push(heading, format!("collapse:{id}"), vec![], collapsed, false);
             if collapsed {

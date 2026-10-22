@@ -35,6 +35,10 @@ class Entry:
     batch_id: str = ""
     quote: dict | None = None
     recipients: list[str] = field(default_factory=list)
+    native_thread_id: str = ""
+    server_turn_id: str = ""
+    hidden: bool = False
+    relay_for: str = ""
 
     def __post_init__(self) -> None:
         self.blocks = [ReplyBlock(**block) if isinstance(block, dict) else block for block in self.blocks]

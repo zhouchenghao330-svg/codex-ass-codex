@@ -50,6 +50,10 @@ class Member:
     effort: str = ""
     permission: str = "full"
     legacy_instructions: bool = False
+    parent_name: str = ""
+    agent_path: str = ""
+    can_accept_direct_input: bool = True
+    native_closed: bool = False
     busy: bool = False
     phase: str = "空闲"
     queue: deque = field(default_factory=deque)
@@ -57,7 +61,8 @@ class Member:
 
     def config(self):
         return {key: getattr(self, key) for key in (
-            "name", "label", "color", "cwd", "thread_id", "model", "effort", "permission", "legacy_instructions")}
+            "name", "label", "color", "cwd", "thread_id", "model", "effort", "permission", "legacy_instructions",
+            "parent_name", "agent_path", "can_accept_direct_input", "native_closed")}
 
 
 def summary_title(value):
@@ -102,6 +107,9 @@ class Service:
         self.completions = CompletionEngine()
         self.background = set()
         self.last_submission = None
+        self.ignored_native_threads = set(self.saved.get("ignored_native_threads", []))
+        from .native_agents import NativeAgents
+        self.native = NativeAgents(self)
 
     @staticmethod
     def write(value):
@@ -141,7 +149,8 @@ class Service:
             old_entries = {e.get("id"): e for e in self.saved.get("entries", [])}
             self.saved.update(version=2, agents=[{**old_members.get(a.name, {}), **a.config()} for a in self.agents.values()],
                               entries=[{**old_entries.get(e.id, {}), **asdict(e)} for e in self.entries], selected=self.selected,
-                              show_all=self.show_all, input_history=self.input_history, drafts=self.drafts)
+                              show_all=self.show_all, input_history=self.input_history, drafts=self.drafts,
+                              ignored_native_threads=sorted(self.ignored_native_threads))
             self.store.save(self.saved)
         self.dirty = False
 
@@ -156,12 +165,19 @@ class Service:
         self.connected = False
         try:
             if self.client:
+                await self.native.close()
+                self.client.observer = None
                 await self.client.close()
+                from .native_agents import NativeAgents
+                self.native = NativeAgents(self)
             self.client = CodexClient(self.cwd, command=self.codex_command)
+            self.client.observer = self.native.observe
             await self.client.start()
             self.connected = True
             for member in self.agents.values():
-                await self.inherit_defaults(member)
+                if not member.parent_name:
+                    await self.inherit_defaults(member)
+            await self.native.start()
             self.notify("Codex 已连接")
             self.dirty = True
         except Exception as exc:
@@ -218,22 +234,13 @@ class Service:
                 elif verb == "/stop":
                     await self.stop(name)
                 else:
-                    await self.stop(name)
-                    if self.store:
-                        self.store.archive_member(name, {"version": 2, "agent": self.agents[name].config(),
-                            "entries": [asdict(e) for e in self.entries if e.sender == name or e.target == name],
-                            "draft": self.drafts.get(name)})
-                    del self.agents[name]
-                    self.drafts.pop(name, None)
-                    self.entries = [e for e in self.entries if e.sender != name and e.target != name]
-                    self.selected = self.selected if self.selected in self.agents else next(iter(self.agents), "")
-                    self.show_all = True
-                    self.emit({"type": "replace", "entries": [wire_entry(e) for e in self.entries]})
-                    self.changed = {k: e for k, e in self.changed.items() if e in self.entries}
+                    await self.delete_member(name)
         elif verb in {"/model", "/permissions", "/permission", "/permisson"}:
             if target not in self.agents:
                 raise ValueError("请先创建成员")
             member = self.agents[target]
+            if member.parent_name:
+                raise ValueError("原生子代理的模型和权限由 Codex 父会话管理，请在父会话中调整")
             args = value.split()[1:]
             if verb == "/model":
                 models = self.client.models if self.client else []
@@ -305,25 +312,40 @@ class Service:
         images = [*prompt.images, *(ForwardQuote.load(quote).images if quote else [])]
         if any(not Path(path).is_file() for path in images):
             raise ValueError("图片文件已不存在，请重新粘贴；输入内容已保留")
+        for name in names:
+            member = self.agents[name]
+            if member.parent_name:
+                if member.native_closed or member.thread_id not in self.native.attached:
+                    raise ValueError(f"@{member.label} 尚未恢复或已关闭，请先 /reconnect")
+                self.native.root_for(member)
         batch = uuid4().hex
         for name in names:
             agent = self.agents[name]
             entry = self.add_entry(Entry("you", prompt.expand(), name, "queued" if agent.busy else "done",
                 display_body=prompt.text if prompt.attachments else None, attachments=prompt.attachments[:],
                 quote=quote, batch_id=batch, recipients=names[:]))
-            agent.queue.append(entry)
-            if agent.busy and name in self.active_entries:
-                self.reply_boundaries.add(name)
-            if not agent.busy:
-                agent.busy = True
-                self.tasks[name] = asyncio.create_task(self.run_agent(name))
+            if agent.parent_name and not agent.can_accept_direct_input:
+                entry.state = "queued"
+                self.native.suspended.discard(name)
+                self.native.spawn(self.native.relay(agent, entry))
             else:
-                self.spawn(self.deliver_followups(name))
+                self.enqueue(agent, entry)
         self.selected = names[0]
         if len(names) > 1:
             self.show_all = True
         self.members()
         return True
+
+    def enqueue(self, agent, entry):
+        agent.queue.append(entry)
+        if agent.busy and agent.name in self.active_entries:
+            if not entry.hidden:
+                self.reply_boundaries.add(agent.name)
+        if not agent.busy:
+            agent.busy = True
+            self.tasks[agent.name] = asyncio.create_task(self.run_agent(agent.name))
+        else:
+            self.spawn(self.deliver_followups(agent.name))
 
     def spawn(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -338,6 +360,7 @@ class Service:
                 request = agent.queue[0]
                 answer = self.active_entries[name][1]
                 try:
+                    request.server_turn_id = self.client.active.get(agent.thread_id, "") if self.client else ""
                     if self.demo:
                         # The demo loop consumes this list in the same turn.
                         self.demo_followups.setdefault(name, []).append(request.input_text)
@@ -362,7 +385,8 @@ class Service:
             self.reply_boundaries.discard(name)
             answer.state = "continued"
             self.refresh_answer(answer)
-            answer = self.add_entry(Entry(name, "", state="working", started_at=answer.started_at, run_id=answer.run_id))
+            answer = self.add_entry(Entry(name, "", state="working", started_at=answer.started_at, run_id=answer.run_id,
+                                         hidden=answer.hidden, relay_for=answer.relay_for))
             self.active_entries[name] = request, answer
         return answer
 
@@ -382,7 +406,8 @@ class Service:
                 self.refresh_answer(request)
                 self.reply_boundaries.discard(name)
                 started = monotonic()
-                answer = self.add_entry(Entry(name, "", state="working", started_at=datetime.now().astimezone().isoformat(timespec="seconds"), run_id=uuid4().hex))
+                answer = self.add_entry(Entry(name, "", state="working", started_at=datetime.now().astimezone().isoformat(timespec="seconds"), run_id=uuid4().hex,
+                    hidden=request.hidden, relay_for=request.relay_for))
                 request.run_id = answer.run_id
                 self.active_entries[name] = request, answer
                 agent.phase = "正在启动会话…"
@@ -407,7 +432,8 @@ class Service:
                 answer.record_finish(monotonic() - started)
                 self.refresh_answer(answer)
                 self.active_entries.pop(name, None)
-                self.notify(f"@{agent.label} 已完成")
+                if not request.hidden:
+                    self.notify(f"@{agent.label} 已完成")
         except asyncio.CancelledError:
             answer = self.active_entries.get(name, (None, answer))[1]
             if answer:
@@ -445,8 +471,11 @@ class Service:
         agent = self.agents[name]
         settings = replace(agent)
         resolve_directory(settings.cwd, self.cwd)
-        await self.inherit_defaults(settings)
-        await self.client.ensure_thread(settings)
+        if settings.parent_name:
+            await self.client.attach_native_thread(settings.thread_id)
+        else:
+            await self.inherit_defaults(settings)
+            await self.client.ensure_thread(settings)
         agent.thread_id = settings.thread_id
         agent.legacy_instructions = settings.legacy_instructions
         agent.model = agent.model or settings.model
@@ -477,6 +506,13 @@ class Service:
                 self.members_dirty = True
                 return
             method, params = event["method"], event.get("params", {})
+            turn_id = params.get("turnId") or params.get("turn", {}).get("id")
+            if turn_id:
+                answer.server_turn_id = turn_id
+                self.active_entries[name][0].server_turn_id = turn_id
+                if agent.parent_name:
+                    answer.native_thread_id = agent.thread_id
+                    self.native.records[agent.thread_id, turn_id] = answer
             item = params.get("item", {})
             item_id = params.get("itemId") or item.get("id", "")
             kind = item.get("type")
@@ -567,7 +603,11 @@ class Service:
             else:
                 self.members_dirty = True
 
-        turn = await self.client.run_turn(settings, text, receive, on_started=lambda: self.deliver_followups(name), images=images)
+        async def on_started():
+            answer.server_turn_id = self.client.active.get(settings.thread_id, "")
+            self.active_entries[name][0].server_turn_id = answer.server_turn_id
+            await self.deliver_followups(name)
+        turn = await self.client.run_turn(settings, text, receive, on_started=on_started, images=images)
         answer.state = "stopped" if turn.get("status") == "interrupted" else "done"
         self.finish_run_tools(name, answer, "stopped" if answer.state == "stopped" else "completed")
         if not answer.body and not answer.blocks:
@@ -586,6 +626,10 @@ class Service:
             self.notify(f"不支持的交互：{method}")
             return
         key = str(event["id"])
+        agent = self.agents.get(name)
+        if agent:
+            agent.phase = "等待你回复…"
+            self.members_dirty = True
         future = asyncio.get_running_loop().create_future()
         self.interactions[key] = (future, event, name)
         self.emit({"type": "interaction", "member": name, "event": event})
@@ -595,9 +639,20 @@ class Service:
         finally:
             self.interactions.pop(key, None)
             self.emit({"type": "interaction_done", "id": key})
+            if agent and agent.busy:
+                agent.phase = "正在继续执行…"
+                self.members_dirty = True
 
     async def stop(self, name):
         agent = self.agents[name]
+        if agent.parent_name and not agent.can_accept_direct_input:
+            for entry in self.entries:
+                if entry.sender == "you" and entry.target == name and entry.state == "queued":
+                    entry.state = "stopped"
+                    self.refresh_answer(entry)
+            await self.native.stop(agent)
+            self.members_dirty = True
+            return
         for request in agent.queue:
             request.state = "stopped"
             self.refresh_answer(request)
@@ -607,6 +662,38 @@ class Service:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.members_dirty = True
+
+    async def delete_member(self, name):
+        names = [name]
+        for parent in names:
+            names.extend(a.name for a in self.agents.values() if a.parent_name == parent and a.name not in names)
+        # Stop every descendant before removing any records. A failure leaves
+        # the tree available to inspect/retry instead of silently orphaning it.
+        for child in reversed(names):
+            await self.stop(child)
+        await self.native.wait_before_removal(names)
+        if self.store:
+            for child in names:
+                self.store.archive_member(child, {"version": 2, "agent": self.agents[child].config(),
+                    "entries": [asdict(e) for e in self.entries if e.sender == child or e.target == child],
+                    "draft": self.drafts.get(child)})
+        for child in reversed(names):
+            member = self.agents.pop(child)
+            if member.parent_name:
+                self.ignored_native_threads.add(member.thread_id)
+                self.native.attached.discard(member.thread_id)
+                try:
+                    await self.client.request("thread/unsubscribe", {"threadId": member.thread_id}, timeout=5)
+                except CodexError as exc:
+                    self.notify("子代理订阅清理：" + clean_error(exc))
+            self.drafts.pop(child, None)
+        removed_ids = {e.id for e in self.entries if e.sender in names or e.target in names}
+        self.entries = [e for e in self.entries if e.id not in removed_ids and e.relay_for not in removed_ids]
+        self.native.records = {key: e for key, e in self.native.records.items() if e.sender not in names}
+        self.selected = self.selected if self.selected in self.agents else next(iter(self.agents), "")
+        self.show_all = True
+        self.emit({"type": "replace", "entries": [wire_entry(e) for e in self.entries]})
+        self.changed = {k: e for k, e in self.changed.items() if e in self.entries}
 
     async def handle(self, message):
         kind = message.get("type")
@@ -687,7 +774,9 @@ class Service:
         except TimeoutError:
             self.notify("停止确认超时，正在关闭本地 Codex 连接")
         finally:
+            await self.native.close()
             if self.client:
+                self.client.observer = None
                 await self.client.close()
         for entry in self.entries:
             if entry.state in {"working", "queued"}:

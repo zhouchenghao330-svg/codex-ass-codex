@@ -89,6 +89,10 @@ class Agent:
     permission: str = "full"
     legacy_instructions: bool = False
     cwd: str = ""
+    parent_name: str = ""
+    agent_path: str = ""
+    can_accept_direct_input: bool = True
+    native_closed: bool = False
 
     @property
     def accent(self) -> str:
@@ -97,6 +101,7 @@ class Agent:
     def config(self) -> dict:
         return {key: getattr(self, key) for key in (
             "name", "label", "color", "thread_id", "model", "effort", "permission", "legacy_instructions", "cwd",
+            "parent_name", "agent_path", "can_accept_direct_input", "native_closed",
         )}
 
 
@@ -862,6 +867,8 @@ class CodexRoom(App):
         return card
 
     def entry_visible(self, entry: Entry) -> bool:
+        if entry.hidden:
+            return False
         if self.show_all and entry.sender == "you" and entry.batch_id:
             return self.batch_heads.get(entry.batch_id) == entry.id
         return (self.show_all or entry.sender == self.selected or entry.target == self.selected
@@ -1211,6 +1218,9 @@ class CodexRoom(App):
         if not self.connected:
             self.notify("Codex 尚未连接；连接失败时可用 /reconnect 重试。", severity="warning")
             return False
+        if any(self.agents[name].parent_name for name in names):
+            self.notify("原生子代理请使用默认 Rust 界面继续对话。", severity="warning")
+            return False
         if any(not Path(path).is_file() for path in [*prompt.images, *(quote.images if quote else [])]):
             self.notify("图片文件已不存在，请重新粘贴；输入内容已保留。", severity="warning")
             return False
@@ -1245,6 +1255,11 @@ class CodexRoom(App):
         command = parts[0].lower()
         explicit_target = target
         target = target or self.selected
+        managed = resolve_member(parts[1], self.agents) if command in {"/stop", "/del"} and len(parts) > 1 else target
+        if command in {"/model", "/permissions", "/permission", "/permisson", "/stop", "/del"} and managed in self.agents and (
+                self.agents[managed].parent_name or command == "/del" and any(a.parent_name == managed for a in self.agents.values())):
+            self.notify("原生子代理管理请使用默认 Rust 界面。", severity="warning")
+            return False
         if command in {"/model", "/permissions", "/permission", "/permisson"} and target not in self.agents:
             self.notify("先用 /add 名字 创建 Codex，再调整它的设置。", severity="warning")
             return False

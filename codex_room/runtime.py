@@ -44,12 +44,16 @@ class CodexClient:
         self.pending: dict[int, asyncio.Future] = {}
         self.queues: dict[str, asyncio.Queue] = {}
         self.loaded: set[str] = set()
+        self.load_locks = {}
         self.active: dict[str, str] = {}
         self.sequence = 0
         self.config: dict = {}
         self.models: list[dict] = []
         self.diagnostics: deque[str] = deque(maxlen=8)
         self.closing = False
+        # A synchronous observer claims child requests before the reader can
+        # reject them. It must never await RPC from inside the reader task.
+        self.observer = None
 
     async def start(self) -> None:
         try:
@@ -62,7 +66,7 @@ class CodexClient:
             self.stderr_reader = asyncio.create_task(self._read_stderr())
             await self.request("initialize", {"clientInfo": {
                 "name": "codex_room", "title": "Codex Room", "version": "0.1.0",
-            }})
+            }, "capabilities": {"experimentalApi": True}})
             await self.send({"method": "initialized"})
             config, catalog = await asyncio.gather(
                 self.request("config/read", {"includeLayers": False, "cwd": self.cwd}),
@@ -117,10 +121,11 @@ class CodexClient:
                 method = message.get("method")
                 if method:
                     params = message.get("params", {})
+                    claimed = self.observer(message) if self.observer else False
                     queue = self.queues.get(params.get("threadId"))
                     if queue is not None:
                         queue.put_nowait(message)
-                    elif "id" in message:
+                    elif "id" in message and not claimed:
                         await self.send({"id": message["id"], "error": {
                             "code": -32601, "message": "No active room turn handles this request",
                         }})
@@ -144,8 +149,48 @@ class CodexClient:
                     future.set_exception(CodexError(failure))
             for queue in self.queues.values():
                 queue.put_nowait({"method": "transport/error", "params": {"message": failure}})
+            if self.observer:
+                self.observer({"method": "transport/error", "params": {"message": failure}})
+
+    async def read_native_thread(self, thread_id: str) -> dict:
+        return (await self.request("thread/read", {"threadId": thread_id, "includeTurns": False}))["thread"]
+
+    async def attach_native_thread(self, thread_id: str) -> dict:
+        result = await self.request("thread/resume", {"threadId": thread_id, "excludeTurns": True})
+        self.loaded.add(thread_id)
+        return result["thread"]
+
+    async def native_turns(self, thread_id: str) -> list[dict]:
+        turns, cursor = [], None
+        while True:
+            params = {"threadId": thread_id, "limit": 100, "itemsView": "full", "sortDirection": "asc"}
+            if cursor:
+                params["cursor"] = cursor
+            page = await self.request("thread/turns/list", params)
+            for turn in page.get("data", []):
+                if turn.get("itemsView") in {"summary", "notLoaded"}:
+                    items, item_cursor = [], None
+                    while True:
+                        query = {"threadId": thread_id, "turnId": turn["id"], "limit": 100, "sortDirection": "asc"}
+                        if item_cursor:
+                            query["cursor"] = item_cursor
+                        detail = await self.request("thread/items/list", query)
+                        items.extend(item["item"] for item in detail.get("data", []))
+                        item_cursor = detail.get("nextCursor")
+                        if not item_cursor:
+                            break
+                    turn = {**turn, "items": items, "itemsView": "full"}
+                turns.append(turn)
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return turns
 
     async def ensure_thread(self, agent) -> dict:
+        lock = self.load_locks.setdefault(agent.name if hasattr(agent, "name") else agent.thread_id or self.cwd, asyncio.Lock())
+        async with lock:
+            return await self._ensure_thread(agent)
+
+    async def _ensure_thread(self, agent) -> dict:
         if agent.thread_id in self.loaded:
             return {}
         cwd = agent.cwd or self.cwd
@@ -160,6 +205,7 @@ class CodexClient:
             params["config"] = {"model_reasoning_effort": agent.effort}
         if agent.thread_id:
             params["threadId"] = agent.thread_id
+            params["excludeTurns"] = True
             if agent.legacy_instructions:
                 params["developerInstructions"] = ""
             result = await self.request("thread/resume", params)
