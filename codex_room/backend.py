@@ -690,6 +690,8 @@ class Service:
         removed_ids = {e.id for e in self.entries if e.sender in names or e.target in names}
         self.entries = [e for e in self.entries if e.id not in removed_ids and e.relay_for not in removed_ids]
         self.native.records = {key: e for key, e in self.native.records.items() if e.sender not in names}
+        entry_ids = {e.id for e in self.entries}
+        self.native.communications.records = {key: e for key, e in self.native.communications.records.items() if e.id in entry_ids}
         self.selected = self.selected if self.selected in self.agents else next(iter(self.agents), "")
         self.show_all = True
         self.emit({"type": "replace", "entries": [wire_entry(e) for e in self.entries]})

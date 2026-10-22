@@ -14,6 +14,7 @@ from uuid import uuid4
 from .colors import choose_color
 from .models import Entry, ReplyBlock
 from .runtime import CodexError, clean_error
+from .communications import Communications
 
 
 def lineage(thread):
@@ -64,6 +65,7 @@ class NativeAgents:
         self.activity_sequence = 0
         self.seen_activities = {}
         self.suspended = set()
+        self.communications = Communications(self)
 
     def member_for(self, thread_id):
         return next((a for a in self.app.agents.values() if a.thread_id == thread_id), None)
@@ -109,6 +111,7 @@ class NativeAgents:
         return task
 
     async def start(self):
+        communication_count = len(self.communications.records)
         self.listener = asyncio.create_task(self.listen())
         # Restoring one missing child must not disconnect unrelated roots.
         for member in list(self.app.agents.values()):
@@ -124,6 +127,10 @@ class NativeAgents:
                 except Exception as exc:
                     member.native_closed = True
                     self.app.notify(f"@{member.label} 恢复失败：{clean_error(exc)}")
+        backfilled = self.communications.backfill()
+        if backfilled or len(self.communications.records) != communication_count:
+            from .backend import wire_entry
+            self.app.emit({"type": "replace", "entries": [wire_entry(e) for e in self.app.entries]})
 
     async def close(self):
         tasks = list(self.jobs) + list(self.adopting.values()) + ([self.listener] if self.listener else [])
@@ -207,6 +214,7 @@ class NativeAgents:
             member.cwd = thread.get("cwd") or member.cwd
             member.native_closed = False
             self.attached.add(thread_id)
+            self.communications.resolve(member)
             await self.hydrate(member)
             self.app.members_dirty = self.app.dirty = True
             return member
@@ -252,6 +260,7 @@ class NativeAgents:
         if key in self.finished_turns and not terminal:
             return
         for item in turn.get("items", []):
+            self.communications.record(member, item, turn_id, owner=entry, completed=terminal, stamp=turn.get("startedAt"))
             block = native_block(item, "completed" if terminal else "inProgress")
             if block:
                 self.merge(entry, block)
@@ -303,6 +312,7 @@ class NativeAgents:
         client = self.app.client
         if method == "transport/error":
             self.app.connected = False
+            self.communications.finish()
             for member in self.app.agents.values():
                 if member.parent_name:
                     member.busy, member.phase = False, "连接已断开"
@@ -328,6 +338,10 @@ class NativeAgents:
                 await client.send({"id": event["id"], "error": {"code": -32601, "message": "Thread does not belong to this room"}})
             return
         item = params.get("item", {})
+        if method == "turn/completed":
+            turn = params.get("turn", {})
+            state = {"completed": "done", "failed": "failed", "interrupted": "stopped"}.get(turn.get("status"), "stopped")
+            self.communications.finish(thread_id, turn.get("id"), state)
         if method in {"item/started", "item/completed"}:
             ids = [item["agentThreadId"]] if item.get("agentThreadId") else []
             if item.get("tool") in {"spawnAgent", "spawn_agent"}:
@@ -338,6 +352,7 @@ class NativeAgents:
                     self.activities[thread_id, params.get("turnId"), child_id] = event.get("_native_sequence", 0)
                 if child and item.get("kind") in {"completed", "interrupted"}:
                     await self.hydrate(child)
+            self.communications.record(member, item, params.get("turnId", ""), completed=method == "item/completed")
         if thread_id in client.queues:
             return
         if "id" in event:

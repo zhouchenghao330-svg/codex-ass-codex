@@ -171,6 +171,73 @@ impl Timeline {
                     false,
                 );
             }
+        } else if e["communication"].is_object() {
+            let info = &e["communication"];
+            let target = members
+                .iter()
+                .find(|m| string(m, "name") == string(e, "target"));
+            let target_label = target
+                .map(|m| string(m, "label"))
+                .unwrap_or(string(info, "target_label"));
+            let collapsed = e["collapsed"].as_bool().unwrap_or(false);
+            push(
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} @{label}", if collapsed { "▸" } else { "▾" }),
+                        accent,
+                    ),
+                    Span::styled(" → ", MUTED),
+                    Span::styled(
+                        format!("@{target_label}"),
+                        target.map(|m| color(string(m, "color"))).unwrap_or(MUTED),
+                    ),
+                    Span::styled(
+                        format!(
+                            " · {} · {}{}",
+                            string(info, "action"),
+                            string(e, "time"),
+                            if string(e, "state") == "failed" {
+                                " · 失败"
+                            } else if string(e, "state") == "working" {
+                                " · 发送中"
+                            } else if string(e, "state") == "stopped" {
+                                " · 已停止"
+                            } else {
+                                ""
+                            }
+                        ),
+                        MUTED,
+                    ),
+                ]),
+                format!("collapse:{id}"),
+                vec![],
+                collapsed,
+                false,
+            );
+            if info["content_available"].as_bool() != Some(true) {
+                push(
+                    Line::styled("Codex 未提供这条通信的正文", MUTED),
+                    "meta".into(),
+                    vec![],
+                    true,
+                    false,
+                );
+            } else if collapsed {
+                push(
+                    Line::styled(
+                        string(e, "body").lines().next().unwrap_or("").to_owned(),
+                        MUTED,
+                    ),
+                    format!("collapse:{id}"),
+                    vec!["message".into()],
+                    true,
+                    false,
+                );
+            } else {
+                for line in history::parse(string(e, "body")) {
+                    push(line, String::new(), vec!["message".into()], false, false);
+                }
+            }
         } else if sender == "you" {
             let labels = if show_all && !string(e, "batch_id").is_empty() {
                 entries

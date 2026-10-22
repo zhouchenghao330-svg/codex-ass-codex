@@ -85,6 +85,8 @@ struct App {
     demo: bool,
     sidebar: bool,
     sidebar_top: usize,
+    ignore_left_release: bool,
+    pending_bottom: bool,
     draft: Draft,
     drafts: HashMap<String, Draft>,
     source: Option<(String, bool, Draft)>,
@@ -143,6 +145,8 @@ impl App {
             demo: false,
             sidebar: false,
             sidebar_top: 0,
+            ignore_left_release: false,
+            pending_bottom: true,
             draft: Draft::default(),
             drafts: HashMap::new(),
             source: None,
@@ -219,6 +223,7 @@ impl App {
         self.clear_selection();
         self.follow = true;
         self.scroll = usize::MAX;
+        self.pending_bottom = true;
         self.timeline.invalidate();
         self.rebuild = true;
         self.view_revision = self.id();
@@ -244,6 +249,7 @@ impl App {
             .saturating_sub(self.body.height as usize)
     }
     fn scroll_by(&mut self, delta: isize) {
+        self.pending_bottom = false;
         self.follow = false;
         self.scroll = self.scroll.saturating_add_signed(delta).min(self.maximum());
     }
@@ -386,6 +392,7 @@ impl App {
                     self.rebuild = true;
                     self.clear_selection();
                     self.follow = true;
+                    self.pending_bottom = true;
                 }
                 if self.forward_create
                     && is_new_selected
@@ -654,7 +661,9 @@ impl App {
             .filter_map(|i| self.entries.get(*i))
             .find(|e| string(e, "sender") != "system")
             .map(|e| {
-                if string(e, "sender") == "you" {
+                if e["communication"].is_object() && !self.show_all {
+                    self.selected.as_str()
+                } else if string(e, "sender") == "you" {
                     string(e, "target")
                 } else {
                     string(e, "sender")
@@ -804,7 +813,23 @@ impl App {
                 }
             }
 
-            messages.push(json!({"id":e["id"],"member":member,"speaker":if string(e,"sender")=="you"{"用户"}else{string(m,"label")},"recipient":string(m,"label"),"cwd":m["cwd"],"time":e["time"],"text":text,"blocks":blocks,"images":images,"forwarded_quote":forwarded}));
+            let conversation_member = if e["communication"].is_object()
+                && (string(e, "sender") == source || string(e, "target") == source)
+            {
+                source
+            } else {
+                member
+            };
+            let recipient = if e["communication"].is_object() {
+                self.members
+                    .iter()
+                    .find(|m| string(m, "name") == string(e, "target"))
+                    .map(|m| string(m, "label"))
+                    .unwrap_or(string(&e["communication"], "target_label"))
+            } else {
+                string(m, "label")
+            };
+            messages.push(json!({"id":e["id"],"member":conversation_member,"speaker":if string(e,"sender")=="you"{"用户"}else{string(m,"label")},"recipient":recipient,"cwd":m["cwd"],"time":e["time"],"text":text,"blocks":blocks,"images":images,"forwarded_quote":forwarded,"communication":e["communication"]}));
         }
         if messages.is_empty() {
             return None;
@@ -995,6 +1020,19 @@ impl App {
     }
     fn mouse(&mut self, mouse: MouseEvent, bridge: &Bridge) -> Result<()> {
         let (x, y) = (mouse.column, mouse.row);
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) && self.ignore_left_release {
+            self.ignore_left_release = false;
+            self.press = None;
+            self.press_point = None;
+            self.pointer = None;
+            self.dragging = false;
+            return Ok(());
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            // Controls own the entire click, even if opening a panel or
+            // switching views changes the layout before the release arrives.
+            self.ignore_left_release = true;
+        }
         if self.modal.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => self.modal_scroll(-1),
@@ -1105,6 +1143,11 @@ impl App {
                 _ => {}
             }
             return Ok(());
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.body.contains(Position::new(x, y))
+        {
+            self.ignore_left_release = false;
         }
         match mouse.kind {
             MouseEventKind::ScrollUp => self.scroll_by(-1),

@@ -39,6 +39,7 @@ class Entry:
     server_turn_id: str = ""
     hidden: bool = False
     relay_for: str = ""
+    communication: dict | None = None
 
     def __post_init__(self) -> None:
         self.blocks = [ReplyBlock(**block) if isinstance(block, dict) else block for block in self.blocks]

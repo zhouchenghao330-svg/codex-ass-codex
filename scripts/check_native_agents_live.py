@@ -31,7 +31,8 @@ async def main():
             assert room.connected
             await room.command("/add 主代理")
             await room.command("/model " + room.agents["主代理"].model + " low")
-            await room.submit(Prompt("创建一个名为 buddy 的原生子代理，告诉它记住暗号 ROOM_NATIVE_CONTEXT，并只回复 CHILD_READY。"
+            await room.submit(Prompt("创建一个名为 buddy 的原生子代理，告诉它记住暗号 ROOM_NATIVE_CONTEXT，"
+                "用 send_message 给 /root 发送一条 ROOM_PEER_NOTICE 消息，然后回复 CHILD_READY。"
                 "你等待它完成后只回复 PARENT_READY。请保留它，不关闭。不执行命令、不改文件、不上网。"))
             await until(lambda: any(a.parent_name for a in room.agents.values()))
             child = next(a for a in room.agents.values() if a.parent_name)
@@ -39,6 +40,10 @@ async def main():
                 any(e.sender == child.name and "CHILD_READY" in e.body for e in room.entries))
             child_id, child_name = child.thread_id, child.name
             print("PASS real child discovered with original output", flush=True)
+            await room.native.queue.join()
+            pairs = {(e.sender, e.target) for e in room.entries if e.communication}
+            assert ("主代理", child_name) in pairs and (child_name, "主代理") in pairs, pairs
+            print("PASS real parent/child communication visible in both directions", flush=True)
             await room.submit(Prompt(f"@{child.label} 刚才让你记住的暗号是什么？只回复暗号，不调用工具。"))
             request = next(e for e in reversed(room.entries) if e.sender == "you" and e.target == child_name)
             await until(lambda: request.state not in {"queued"} and not child.busy)

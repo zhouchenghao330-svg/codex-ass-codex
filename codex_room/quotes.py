@@ -52,7 +52,12 @@ class ForwardQuote:
         sections = []
         for message in self.selected:
             heading = f"用户 → @{message.get('recipient', self.source_label)}" if message["speaker"] == "用户" else f"@{message['speaker']}"
+            if message.get("communication"):
+                info = message["communication"]
+                heading = f"@{message['speaker']} → @{message.get('recipient', '')} · {info.get('action', '通信')}"
             lines = [heading, f"工作目录：{message['cwd']}", ""]
+            if (message.get("communication") or {}).get("content_available") is False:
+                lines.append("Codex 未提供这条通信的正文。")
             if not any(block["kind"] == "text" for block in message["blocks"]):
                 lines.append(message["text"])
             for block in message["blocks"]:

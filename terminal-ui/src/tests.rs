@@ -69,6 +69,48 @@ fn stale_status_updates_do_not_undo_a_new_view_choice() {
     assert_eq!(app.selected, "B");
 }
 #[test]
+fn communication_text_direction_and_missing_payload_survive_forwarding() {
+    let mut message = entry("message", "A", "**Review this**");
+    message["target"] = json!("B");
+    message["communication"] =
+        json!({"action":"发送消息","content_available":true,"target_label":"B"});
+    message["blocks"] = json!([{"id":"message","kind":"text","text":"**Review this**"}]);
+    let mut app = app(vec![message]);
+    app.selected = "B".into();
+    app.timeline.invalidate();
+    app.rebuild = true;
+    app.rebuild();
+    assert!(app.timeline.rows.iter().any(|r| r.text.contains("@A → @B")));
+    let last = app.timeline.rows.len() - 1;
+    select_rows(&mut app, 0, 0, last, 0);
+    let quote = app.quote().unwrap();
+    assert_eq!(quote["source"], "B");
+    assert_eq!(quote["messages"][0]["member"], "B");
+    assert_eq!(quote["messages"][0]["speaker"], "A");
+    assert_eq!(quote["messages"][0]["recipient"], "B");
+    app.clear_selection();
+    app.entries[0]["body"] = json!("");
+    app.entries[0]["blocks"] = json!([]);
+    app.entries[0]["communication"]["content_available"] = json!(false);
+    app.timeline.invalidate();
+    app.rebuild = true;
+    app.rebuild();
+    assert!(
+        app.timeline
+            .rows
+            .iter()
+            .any(|r| r.text.contains("Codex 未提供"))
+    );
+    let last = app.timeline.rows.len() - 1;
+    select_rows(&mut app, 0, 0, last, 0);
+    let quote = app.quote().unwrap();
+    assert_eq!(quote["messages"][0]["text"], "");
+    assert_eq!(
+        quote["messages"][0]["communication"]["content_available"],
+        false
+    );
+}
+#[test]
 fn acknowledgement_retains_new_input_and_rejection_restores_atomic_payload() {
     let mut app = app(vec![]);
     let mut submitted = Draft::default();

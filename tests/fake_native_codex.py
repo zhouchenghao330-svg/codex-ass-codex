@@ -89,6 +89,10 @@ async def root_run(tid, turn, text):
             ct = turn_start(child_id)
             tasks[ct["id"]] = asyncio.create_task(child_run(child_id, ct, "ORIGINAL_CONTEXT", text == "spawn-approval"))
             item(tid, turn, {"id": "spawn", "type": "subAgentActivity", "kind": "started", "agentThreadId": child_id, "agentPath": "/root/buddy"})
+            if text == "spawn-plaintext":
+                item(tid, turn, {"id": "visible-message", "type": "collabAgentToolCall", "tool": "sendInput",
+                    "senderThreadId": tid, "receiverThreadIds": [child_id], "status": "completed",
+                    "prompt": "**PEER_ORIGINAL_TEXT**\n\nPlease review the implementation."})
         elif text.startswith("这是 Codex Room"):
             await relay(tid, turn, text)
         elif text == "hold":

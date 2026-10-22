@@ -68,6 +68,57 @@ class RustUITests(unittest.TestCase):
     def finish(self):
         self.assertEqual(self.session.finish(),0)
 
+    def test_footer_member_switch_reaches_latest_after_scrolling_and_reselect(self):
+        agents = [{"name": name, "label": name, "color": "#78d8bc", "cwd": str(self.cwd)} for name in ("A", "B", "C")]
+        entries = [{"id": f"{name}-{n}", "sender": name, "body": f"{name} history {n}\n" * 3,
+            "target": "", "state": "done"} for name in ("A", "B", "C") for n in range(60)]
+        for name in ("A", "B", "C"):
+            index = next(i for i in reversed(range(len(entries))) if entries[i]["sender"] == name)
+            entries[index]["body"] += "LATEST_" + name
+        (self.cwd/".codex-room").mkdir()
+        (self.cwd/".codex-room/state.json").write_text(json.dumps({"version":2,"agents":agents,"entries":entries,"selected":"A","show_all":True}))
+        self.start(columns=115, rows=32)
+        self.session.wait(lambda:"LATEST_C" in self.session.visible)
+        self.session.send(b"\x1b[<64;90;12M" * 24)
+        self.session.wait(lambda:"LATEST_C" not in self.session.visible)
+        self.click(1,31)
+        self.session.wait(lambda:"成员 · 3" in self.session.visible)
+        self.click(5,11)  # Last visible member C, via the sidebar.
+        self.session.wait(lambda:"LATEST_C" in self.session.visible and "@C" in self.session.visible)
+        self.session.send(b"\x1b[<64;90;12M" * 24)
+        self.session.wait(lambda:"LATEST_C" not in self.session.visible)
+        self.click(5,11)  # Selecting the already active member must also go down.
+        self.session.wait(lambda:"LATEST_C" in self.session.visible)
+        self.click(5,3)
+        self.session.wait(lambda:"LATEST_A" in self.session.visible and "LATEST_C" not in self.session.visible)
+        self.click(25,31)  # Close sidebar and reflow the conversation.
+        self.session.wait(lambda:"成员 · 3" not in self.session.visible)
+        self.assertIn("LATEST_A", self.session.visible)
+        self.finish()
+
+    def test_peer_communication_is_visible_with_original_markdown_or_missing_notice(self):
+        os.environ["CODEX_ROOM_CODEX_COMMAND"] = json.dumps([str(ROOT/".venv/bin/python"), str(ROOT/"tests/fake_native_codex.py")])
+        self.start(columns=125, rows=42)
+        self.command("/add A", finish="@A")
+        self.command("spawn-plaintext", finish="PEER_ORIGINAL_TEXT")
+        self.session.wait(lambda:"@A → @buddy" in self.session.visible)
+        self.assertNotIn("**PEER_ORIGINAL_TEXT**", self.session.visible)
+        self.assertIn("Codex 未提供这条通信的正文", self.session.visible)
+        self.command("/focus buddy", finish="PEER_ORIGINAL_TEXT")
+        self.session.wait(lambda:"CHILD:ORIGINAL_CONTEXT" in self.session.visible)
+        self.finish()
+        state = json.loads((self.cwd/".codex-room/state.json").read_text())
+        messages = [e for e in state["entries"] if e.get("communication")]
+        self.assertEqual(len(messages), 2)
+        self.session.close(); self.session = None
+        self.start(columns=125, rows=42)
+        self.session.wait(lambda:"PEER_ORIGINAL_TEXT" in self.session.visible)
+        self.finish()
+        state = json.loads((self.cwd/".codex-room/state.json").read_text())
+        restored = [e for e in state["entries"] if e.get("communication")]
+        self.assertEqual({e["id"] for e in restored}, {e["id"] for e in messages})
+        self.assertEqual(len(restored), 2)
+
     def test_native_child_original_output_multiround_and_restart(self):
         os.environ["CODEX_ROOM_CODEX_COMMAND"] = json.dumps([str(ROOT/".venv/bin/python"), str(ROOT/"tests/fake_native_codex.py")])
         self.start(columns=120, rows=36)

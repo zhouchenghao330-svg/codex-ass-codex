@@ -54,6 +54,11 @@ impl App {
             self.rebuild = true;
         }
         self.rebuild();
+        if self.pending_bottom && self.selection.is_none() && self.press.is_none() {
+            self.scroll = self.maximum();
+            self.follow = true;
+            self.pending_bottom = false;
+        }
         if self.follow && self.selection.is_none() && self.press.is_none() {
             self.scroll = self.maximum();
         }
