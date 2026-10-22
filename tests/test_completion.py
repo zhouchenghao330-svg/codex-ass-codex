@@ -29,6 +29,7 @@ class CompletionTests(unittest.TestCase):
         cases = {
             "/mem": ["/members"], "@a /mod": ["/model"], "/permisson": ["/permissions"],
             "/focus ": ["a", "b"], "@a /stop @": ["@a", "@b"],
+            "/d": ["/del"], "/del ": ["a", "b"], "@a /del @": ["@a", "@b"],
             "/model te": ["test-model"], "/model cu": ["custom-model"],
             "/model test-model ": ["low", "high"], "/permissions w": ["workspace"],
             "/add new --co": ["--color"], "/add new --color p": ["peach"],

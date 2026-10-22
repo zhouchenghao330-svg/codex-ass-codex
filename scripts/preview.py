@@ -108,9 +108,10 @@ async def preview() -> None:
         composer.cursor_position = 0
 
         # Use the actual composer and sidebar rather than bypassing their events.
-        await pilot.press("ctrl+b")
+        await pilot.click("#toggle-sidebar")
         await pilot.pause(0.1)
         assert app.query_one("#sidebar").display
+        assert str(app.query_one("#toggle-sidebar").label) == "‹ 收起"
         capture(app, "sidebar.svg", output)
         await pilot.click("#member-ops")
         assert app.selected == "ops"
@@ -222,7 +223,7 @@ async def preview() -> None:
         assert app.query_one("#message-input").region.bottom <= 26
         assert app.query_one("#message-input").region.width > 75
         capture(app, "compact.svg", output)
-        await pilot.press("ctrl+b")
+        await pilot.click("#toggle-sidebar")
         await pilot.pause(0.1)
         app.scroll_bottom()
         await pilot.pause()

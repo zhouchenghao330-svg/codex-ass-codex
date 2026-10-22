@@ -80,6 +80,11 @@ class Agent:
     def accent(self) -> str:
         return member_colors(self.color).accent
 
+    def config(self) -> dict:
+        return {key: getattr(self, key) for key in (
+            "name", "label", "color", "thread_id", "model", "effort", "permission", "legacy_instructions", "cwd",
+        )}
+
 
 class Member(Static):
     class Selected(EventMessage):
@@ -295,6 +300,7 @@ class Help(ModalScreen[None]):
                 "[b #a9b6ff]/focus 名字[/]         切到该成员的单人对话\n"
                 "[b #a9b6ff]/members[/]            展开 / 收起成员列表\n"
                 "[b #a9b6ff]/stop 名字[/]          停止回复，并取消该成员的排队消息\n"
+                "[b #a9b6ff]/del 名字[/]           移除成员，会话记录先归档\n"
                 "[b #a9b6ff]/model[/]              选择模型和推理强度\n"
                 "[b #a9b6ff]/permissions[/]        选择权限，默认 Full Access\n"
                 "[b #a9b6ff]@a /model[/]           调整指定成员的设置\n"
@@ -471,9 +477,9 @@ class CodexRoom(App):
                     yield Static("›", id="prompt")
                     yield ComposerInput(placeholder="说点什么，或 @名字…", id="message-input", select_on_focus=False)
                 with Horizontal(id="footer"):
+                    yield Button("› 成员", id="toggle-sidebar", tooltip="展开 / 收起成员列表 · Ctrl+B")
                     yield Static("", id="recipient")
-                    yield Button("成员", id="toggle-sidebar")
-                    yield Static("Ctrl+B · F1 帮助", id="connection")
+                    yield Static("F1 帮助", id="connection")
 
     async def on_mount(self) -> None:
         self.room_screen = self.screen
@@ -669,9 +675,10 @@ class CodexRoom(App):
         all_messages.set_class(self.show_all, "selected")
         self.room_screen.query_one("#member-count", Static).update(f"{len(self.agents):02d}")
         self.room_screen.query_one("#empty-room", Static).display = not self.agents
+        self.room_screen.query_one("#toggle-sidebar", Button).label = "‹ 收起" if self.sidebar_visible else "› 成员"
         self.refresh_recipient()
         state = "演示" if self.demo else ("已连接" if self.connected else ("离线" if self.connection_error else "连接中"))
-        self.room_screen.query_one("#connection", Static).update(f"Ctrl+B · F1 帮助 · {state}")
+        self.room_screen.query_one("#connection", Static).update(f"F1 帮助 · {state}")
 
     def refresh_recipient(self) -> None:
         value = self.room_screen.query_one("#message-input", Input).value
@@ -697,7 +704,7 @@ class CodexRoom(App):
         elif self.completion_open:
             recipient = Text("↑↓ 选择 · Tab / Enter 补全 · Esc 关闭", style=MUTED)
         elif value.startswith("/"):
-            recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /help", style=MUTED)
+            recipient = Text("/model  /permissions  /add  /focus  /members  /stop  /del  /help", style=MUTED)
         self.room_screen.query_one("#recipient", Static).update(recipient)
         self.room_screen.query_one("#message-input", Input).placeholder = f"给 @{self.selected} 发消息，或 @名字…" if self.agents else "输入 /add 名字 创建 Codex…"
 
@@ -741,7 +748,8 @@ class CodexRoom(App):
             self.action_composer()
 
     def on_member_selected(self, event: Member.Selected) -> None:
-        self.select(event.name, single=True)
+        if event.name in self.agents:
+            self.select(event.name, single=True)
 
     def action_select_index(self, index: int) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -820,6 +828,7 @@ class CodexRoom(App):
             return
         self.sidebar_visible = not self.sidebar_visible
         self.room_screen.query_one("#sidebar").display = self.sidebar_visible
+        self.refresh_chrome()
         if self.sidebar_visible:
             self.set_timer(0.05, self.reveal_selected)
         self.action_composer()
@@ -904,7 +913,7 @@ class CodexRoom(App):
             return False
         if body.startswith("/"):
             accepted = await self.command(body, target=name)
-            if accepted:
+            if accepted and name in self.agents:
                 self.select(name)
             return accepted
         if not self.connected:
@@ -925,6 +934,7 @@ class CodexRoom(App):
     async def command(self, value: str, target: str | None = None) -> bool:
         parts = value.split(maxsplit=2)
         command = parts[0].lower()
+        explicit_target = target
         target = target or self.selected
         if command in {"/model", "/permissions", "/permission", "/permisson"} and target not in self.agents:
             self.notify("先用 /add 名字 创建 Codex，再调整它的设置。", severity="warning")
@@ -943,6 +953,15 @@ class CodexRoom(App):
                     self.notify("名字需要唯一，使用英文字母、数字、_ 或 -，以字母开头，最多 20 位。", severity="warning")
                     return False
                 return await self.create_member(name, color=options.color, cwd=options.cwd)
+        elif command == "/del":
+            if len(parts) > 2 or (len(parts) == 1 and not explicit_target):
+                self.notify("用 /del 名字 移除成员。", severity="warning")
+                return False
+            name = parts[1].lstrip("@").lower() if len(parts) > 1 else explicit_target
+            if name not in self.agents:
+                self.notify(f"没有 @{name}。", severity="warning")
+                return False
+            return await self.delete_agent(name)
         elif command in {"/focus", "/stop"}:
             name = parts[1].lstrip("@").lower() if len(parts) > 1 else target
             if name not in self.agents:
@@ -1055,11 +1074,7 @@ class CodexRoom(App):
     def save_state(self) -> None:
         if not self.store or not self.dirty:
             return
-        members = []
-        for agent in self.agents.values():
-            members.append({key: getattr(agent, key) for key in (
-                "name", "label", "color", "thread_id", "model", "effort", "permission", "legacy_instructions", "cwd",
-            )})
+        members = [agent.config() for agent in self.agents.values()]
         try:
             self.store.save({"version": 2, "selected": self.selected, "show_all": self.show_all, "agents": members,
                              "entries": [asdict(entry) for entry in self.entries]})
@@ -1283,6 +1298,46 @@ class CodexRoom(App):
         if not answer.body and not answer.blocks:
             answer.append_text("回复已停止。" if answer.state == "stopped" else "本轮已完成。")
         self.refresh_answer(answer)
+
+    async def delete_agent(self, name: str) -> bool:
+        agent = self.agents[name]
+        task = self.tasks.get(name)
+        if agent.busy or agent.queue or (task and not task.done()):
+            await self.stop_agent(name)
+        else:
+            self.tasks.pop(name, None)
+        removed = [entry for entry in self.entries if entry.sender == name or entry.target == name]
+        if self.store:
+            try:
+                self.store.archive_member(name, {"version": 2, "archived_at": datetime.now().astimezone().isoformat(),
+                                                 "agent": agent.config(), "entries": [asdict(entry) for entry in removed]})
+            except OSError as exc:
+                self.notify(f"归档失败，已保留 @{name}：{exc}", severity="error")
+                return False
+
+        self.close_completions()
+        self.room_screen.clear_selection()
+        # Keep member metadata until its mounted cards have been removed.
+        removed_ids = {id(entry) for entry in removed}
+        self.entries = [entry for entry in self.entries if id(entry) not in removed_ids]
+        await self.room_screen.query_one("#timeline", VerticalScroll).remove_children(
+            [self.cards.pop(id(entry)) for entry in removed]
+        )
+        if self.selected == name:
+            self.selected = next((other for other in self.agents if other != name), "")
+        await self.room_screen.query_one(f"#member-{name}", Member).remove()
+        del self.agents[name]
+        if not self.agents:
+            self.show_all = True
+        if self.client and agent.thread_id:
+            self.client.loaded.discard(agent.thread_id)
+        self.dirty = True
+        self.apply_filter()
+        await self.add_entry(Entry("system", f"已移除 @{name}" + (" · 会话记录已归档" if self.store else "")))
+        self.save_state()
+        self.action_composer()
+        self.refresh_completions()
+        return True
 
     async def stop_agent(self, name: str) -> None:
         agent = self.agents[name]

@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 
@@ -72,6 +73,21 @@ class RoomStore:
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+
+    def archive_member(self, name: str, data: dict) -> Path:
+        directory = self.path.parent / "archives"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        prefix = f"{datetime.now():%Y%m%d-%H%M%S}-{name}-"
+        fd, archive = tempfile.mkstemp(prefix=prefix, suffix=".json", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            os.unlink(archive)
+            raise
+        return Path(archive)
 
     def close(self) -> None:
         if not self.lock.closed:

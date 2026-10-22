@@ -36,7 +36,7 @@ class TerminalTests(unittest.TestCase):
             while time.monotonic() < deadline:
                 if select.select([master], [], [], 0.05)[0]:
                     output.extend(os.read(master, 65536))
-                if keys and not sent and b"Ctrl+B" in output:
+                if keys and not sent and b"F1" in output:
                     os.write(master, keys)
                     sent = True
                 if process.poll() is not None:

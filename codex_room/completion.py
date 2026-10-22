@@ -15,6 +15,7 @@ COMMANDS = (
     ("/add", "创建 Codex · 名字 [目录] [--color 颜色]"),
     ("/focus", "切到成员的单人对话 · 名字"),
     ("/stop", "停止成员并取消排队消息 · 名字"),
+    ("/del", "移除成员，先归档会话记录 · 名字"),
     ("/model", "选择模型 · [模型] [推理强度]"),
     ("/permissions", "选择权限 · [full / workspace / read-only]"),
     ("/members", "展开 / 收起成员列表"),
@@ -156,7 +157,7 @@ class CompletionEngine:
             elif before:
                 command, *arguments = before
                 command = ALIASES.get(command.lower(), command.lower())
-                if command in {"/focus", "/stop"} and not arguments:
+                if command in {"/focus", "/stop", "/del"} and not arguments:
                     kind = "member"
                     candidates = [Candidate(("@" if query.startswith("@") else "") + name, member=name)
                                   for name in agents if name.startswith(query.lstrip("@").lower())]
