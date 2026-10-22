@@ -54,6 +54,7 @@ class Member:
     agent_path: str = ""
     can_accept_direct_input: bool = True
     native_closed: bool = False
+    room_tool_version: int = 0
     busy: bool = False
     phase: str = "空闲"
     queue: deque = field(default_factory=deque)
@@ -62,7 +63,7 @@ class Member:
     def config(self):
         return {key: getattr(self, key) for key in (
             "name", "label", "color", "cwd", "thread_id", "model", "effort", "permission", "legacy_instructions",
-            "parent_name", "agent_path", "can_accept_direct_input", "native_closed")}
+            "parent_name", "agent_path", "can_accept_direct_input", "native_closed", "room_tool_version")}
 
 
 def summary_title(value):
@@ -110,6 +111,8 @@ class Service:
         self.ignored_native_threads = set(self.saved.get("ignored_native_threads", []))
         from .native_agents import NativeAgents
         self.native = NativeAgents(self)
+        from .peer_router import PeerRouter
+        self.peers = PeerRouter(self)
 
     @staticmethod
     def write(value):
@@ -151,6 +154,7 @@ class Service:
                               entries=[{**old_entries.get(e.id, {}), **asdict(e)} for e in self.entries], selected=self.selected,
                               show_all=self.show_all, input_history=self.input_history, drafts=self.drafts,
                               ignored_native_threads=sorted(self.ignored_native_threads))
+            self.saved.update(self.peers.saved_state())
             self.store.save(self.saved)
         self.dirty = False
 
@@ -171,6 +175,9 @@ class Service:
                 from .native_agents import NativeAgents
                 self.native = NativeAgents(self)
             self.client = CodexClient(self.cwd, command=self.codex_command)
+            await self.peers.bridge.start()
+            self.client.thread_options = self.peers.thread_options
+            self.client.input_context = self.peers.context
             self.client.observer = self.native.observe
             await self.client.start()
             self.connected = True
@@ -364,19 +371,31 @@ class Service:
                     if self.demo:
                         # The demo loop consumes this list in the same turn.
                         self.demo_followups.setdefault(name, []).append(request.input_text)
-                    elif not await self.client.steer_turn(agent.thread_id, request.input_text, images=request.image_paths):
-                        break
+                    else:
+                        if request.communication and request.communication.get("transport") == "room":
+                            request.communication["target_thread_id"] = agent.thread_id
+                            self.peers.delivery(request, "delivering")
+                        accepted = await self.client.steer_turn(agent.thread_id, request.input_text, images=request.image_paths)
+                        if not accepted:
+                            self.peers.delivery(request, "queued")
+                            break
+                        if request.communication and request.communication.get("transport") == "room":
+                            self.peers.steered(name, request)
                 except Exception as exc:
                     if agent.queue and agent.queue[0] is request:
                         agent.queue.popleft()
-                    request.state = "failed"
+                    confirmed = request.communication and request.communication.get("delivery") in {"delivered", "steered"}
+                    if not confirmed:
+                        request.state = "failed"
+                        self.peers.delivery(request, "uncertain", clean_error(exc))
+                        self.notify(f"追加未确认：{clean_error(exc)}。未自动重发")
                     self.refresh_answer(request)
-                    self.notify(f"追加未确认：{clean_error(exc)}。未自动重发")
                     continue
                 if not agent.queue or agent.queue[0] is not request:
                     break
                 agent.queue.popleft()
                 request.state, request.run_id = "steered", answer.run_id
+                self.peers.steered(name, request)
                 self.refresh_answer(request)
 
     async def continuation(self, name):
@@ -386,7 +405,7 @@ class Service:
             answer.state = "continued"
             self.refresh_answer(answer)
             answer = self.add_entry(Entry(name, "", state="working", started_at=answer.started_at, run_id=answer.run_id,
-                                         hidden=answer.hidden, relay_for=answer.relay_for))
+                                         hidden=answer.hidden, relay_for=answer.relay_for, peer_context=answer.peer_context))
             self.active_entries[name] = request, answer
         return answer
 
@@ -403,11 +422,13 @@ class Service:
                 async with agent.delivery_lock:
                     request = agent.queue.popleft()
                 request.state = "done"
+                self.peers.delivery(request, "delivering")
                 self.refresh_answer(request)
                 self.reply_boundaries.discard(name)
                 started = monotonic()
                 answer = self.add_entry(Entry(name, "", state="working", started_at=datetime.now().astimezone().isoformat(timespec="seconds"), run_id=uuid4().hex,
-                    hidden=request.hidden, relay_for=request.relay_for))
+                    hidden=request.hidden, relay_for=request.relay_for,
+                    peer_context=request.id if request.communication and request.communication.get("transport") == "room" else ""))
                 request.run_id = answer.run_id
                 self.active_entries[name] = request, answer
                 agent.phase = "正在启动会话…"
@@ -435,6 +456,10 @@ class Service:
                 if not request.hidden:
                     self.notify(f"@{agent.label} 已完成")
         except asyncio.CancelledError:
+            if name in self.active_entries:
+                request = self.active_entries[name][0]
+                if request.communication and request.communication.get("delivery") == "delivering":
+                    self.peers.delivery(request, "uncertain", "Stopped before the turn-start acknowledgement; not retried.")
             answer = self.active_entries.get(name, (None, answer))[1]
             if answer:
                 answer.state = "stopped"
@@ -443,6 +468,10 @@ class Service:
                 self.refresh_answer(answer)
             raise
         except Exception as exc:
+            if name in self.active_entries:
+                request = self.active_entries[name][0]
+                if request.communication and request.communication.get("delivery") == "delivering":
+                    self.peers.delivery(request, "uncertain", clean_error(exc))
             answer = self.active_entries.get(name, (None, answer))[1]
             if answer:
                 answer.state = "failed"
@@ -456,6 +485,7 @@ class Service:
         finally:
             for pending in agent.queue:
                 pending.state = "stopped"
+                self.peers.delivery(pending, "stopped")
                 self.refresh_answer(pending)
             agent.queue.clear()
             self.active_entries.pop(name, None)
@@ -478,6 +508,7 @@ class Service:
             await self.client.ensure_thread(settings)
         agent.thread_id = settings.thread_id
         agent.legacy_instructions = settings.legacy_instructions
+        agent.room_tool_version = settings.room_tool_version
         agent.model = agent.model or settings.model
         agent.effort = agent.effort or settings.effort
         agent.phase = "等待 Codex…"
@@ -606,6 +637,7 @@ class Service:
         async def on_started():
             answer.server_turn_id = self.client.active.get(settings.thread_id, "")
             self.active_entries[name][0].server_turn_id = answer.server_turn_id
+            self.peers.started(name, answer.server_turn_id)
             await self.deliver_followups(name)
         turn = await self.client.run_turn(settings, text, receive, on_started=on_started, images=images)
         answer.state = "stopped" if turn.get("status") == "interrupted" else "done"
@@ -617,6 +649,16 @@ class Service:
 
     async def server_request(self, name, event):
         method = event["method"]
+        if method == "item/tool/call":
+            params = event.get("params", {})
+            member = self.agents.get(name)
+            if (params.get("namespace"), params.get("tool")) == ("room", "send_message") and member and member.thread_id == params.get("threadId"):
+                receipt = self.peers.send(params.get("threadId"), params.get("turnId"), params.get("callId"), params.get("arguments"))
+            else:
+                receipt = self.peers.error("Unknown Room tool or issuing member.")
+            await self.client.respond(event["id"], {"success": receipt.get("accepted", False),
+                "contentItems": [{"type": "inputText", "text": json.dumps(receipt, ensure_ascii=False)}]})
+            return
         if method == "mcpServer/elicitation/request":
             await self.client.respond(event["id"], {"action": "cancel"})
             self.notify(f"@{name} 的 MCP 表单暂不支持，已取消")
@@ -645,6 +687,7 @@ class Service:
 
     async def stop(self, name):
         agent = self.agents[name]
+        self.peers.stop_member(name)
         if agent.parent_name and not agent.can_accept_direct_input:
             for entry in self.entries:
                 if entry.sender == "you" and entry.target == name and entry.state == "queued":
@@ -655,6 +698,7 @@ class Service:
             return
         for request in agent.queue:
             request.state = "stopped"
+            self.peers.delivery(request, "stopped")
             self.refresh_answer(request)
         agent.queue.clear()
         task = self.tasks.get(name)
@@ -780,6 +824,7 @@ class Service:
             if self.client:
                 self.client.observer = None
                 await self.client.close()
+            await self.peers.bridge.close()
         for entry in self.entries:
             if entry.state in {"working", "queued"}:
                 entry.state = "stopped"

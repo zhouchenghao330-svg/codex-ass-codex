@@ -14,6 +14,38 @@ requests = {}
 sequence = 0
 
 
+def input_text(params):
+    return "\n".join(item["text"] for item in params["input"]
+                     if item["type"] == "text" and not item["text"].startswith("[Codex Room host context;"))
+
+
+async def public_call(thread, turn, arguments):
+    global sequence
+    sequence += 1
+    rid = f"public-{sequence}"
+    future = asyncio.get_running_loop().create_future()
+    requests[rid] = future
+    item = {"id": rid, "type": "dynamicToolCall", "namespace": "room", "tool": "send_message",
+            "arguments": arguments, "status": "inProgress"}
+    send({"method": "item/started", "params": {"threadId": thread, "turnId": turn, "item": item}})
+    send({"id": rid, "method": "item/tool/call", "params": {"threadId": thread, "turnId": turn,
+          "callId": rid, "namespace": "room", "tool": "send_message", "arguments": arguments}})
+    result = await future
+    send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn,
+          "item": {**item, **result, "status": "completed" if result.get("success") else "failed"}}})
+    return json.loads(result["contentItems"][0]["text"])
+
+
+async def peer_input(thread, turn, text):
+    lines = text.splitlines()
+    info = json.loads(lines[1])
+    if info["expect_reply"]:
+        receipt = await public_call(thread, turn, {"to": info["from"], "message": "**PUBLIC_ANSWER**\n\n完整的公开回复。",
+            "reply_to": info["message_id"], "expect_reply": False})
+        return "PEER_REPLIED:" + str(receipt.get("accepted"))
+    return "FINAL_PEER_RESPONSE_RECEIVED"
+
+
 def config_for(cwd):
     config = {"model": "test-model", "model_reasoning_effort": "high"}
     path = Path(cwd) / ".codex/config.toml"
@@ -30,6 +62,14 @@ def send(message):
 async def finish(thread, turn, text, params):
     global sequence
     try:
+        if text.startswith("peer-send "):
+            target = text.split(maxsplit=1)[1]
+            receipt = await public_call(thread, turn, {"to": target, "message": "**PUBLIC_REQUEST**\n\n请给出你的建议。"})
+            text = "PUBLIC_RECEIPT:" + str(receipt.get("accepted"))
+            # Exercise a reply arriving while the sender is still processing.
+            await asyncio.sleep(.15)
+        elif text.startswith("[Codex Room public peer message;"):
+            text = await peer_input(thread, turn, text)
         if text == "continuous-stream":
             body = ""
             for index in range(120):
@@ -140,7 +180,13 @@ async def finish(thread, turn, text, params):
                                "marker": (cwd / "marker.txt").read_text(), "model": params.get("model"),
                                "sandbox": params["sandboxPolicy"]})
         if steering.get(turn):
-            text += "\nSTEERED: " + json.dumps(steering[turn], ensure_ascii=False)
+            displayed = []
+            for followup in steering[turn]:
+                if followup.startswith("[Codex Room public peer message;"):
+                    displayed.append(await peer_input(thread, turn, followup))
+                else:
+                    displayed.append(followup)
+            text += "\nSTEERED: " + json.dumps(displayed, ensure_ascii=False)
         if text == "fail":
             send({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": turn, "status": "failed", "error": {"message": "test failure"}}}})
             return
@@ -191,12 +237,12 @@ async def main():
             thread_turns[thread] = turn
             steering[turn] = []
             steer_ready[turn] = asyncio.Event()
-            turns[turn] = asyncio.create_task(finish(thread, turn, params["input"][0]["text"], params))
+            turns[turn] = asyncio.create_task(finish(thread, turn, input_text(params), params))
             result = {"turn": {"id": turn, "status": "inProgress"}}
         elif method == "turn/steer":
             thread = params["threadId"]
             turn = thread_turns.get(thread)
-            text = params["input"][0]["text"]
+            text = input_text(params)
             if text == "reject-steer":
                 send({"id": message["id"], "error": {"code": -32602, "message": "steering rejected by fixture"}})
                 continue
@@ -210,7 +256,7 @@ async def main():
                 send({"id": message["id"], "error": {"code": -32600, "message": "turn id mismatch"}})
                 continue
             steering[turn].append(text)
-            if text in {"finish-steer", "finish-and-ack"}:
+            if text in {"finish-steer", "finish-and-ack"} or text.startswith("[Codex Room public peer message;"):
                 steer_ready[turn].set()
             if text == "finish-and-ack":
                 await turns[turn]

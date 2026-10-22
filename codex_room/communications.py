@@ -12,7 +12,7 @@ class Communications:
     def __init__(self, native):
         self.native = native
         self.app = native.app
-        self.records = {e.id: e for e in self.app.entries if e.communication}
+        self.records = {e.id: e for e in self.app.entries if e.communication and e.communication.get("transport") != "room"}
 
     def record(self, sender, item, turn_id, *, owner=None, completed=True, stamp=None):
         if item.get("type") == "subAgentActivity":

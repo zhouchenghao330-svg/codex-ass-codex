@@ -7,9 +7,10 @@
 - `terminal-ui/`：Rust + Ratatui。输入编辑、Markdown 排版、工具展开、成员视图、拖选、滚动、转发草稿均在此进程处理。
 - `codex_room/backend.py`：无界面的 Python 服务，复用经过验证的 `runtime.py` 与 `storage.py`，负责 Codex RPC、steer、取消、交互请求和 v2 存储。正常运行不加载 Textual。
 - `models.py`、`quotes.py`：新旧界面共享的消息与引用结构，不依赖界面框架。
+- `peer_router.py`、`peer_tools.py`：独立成员公开通信的协议与路由。新会话使用动态工具，已有会话由 `peer_mcp.py` 临时适配，保持原 thread。
 - `launcher.py`：构建并启动 Rust；`--legacy-ui` 显式启动旧 Textual。
 
-前后端通过子进程 stdio 的 JSON 行通信，没有监听端口。UI 命令与 Codex RPC 是两条独立通道。鼠标事件、选区更新和输入编辑不会跨进程等待 Python。接收消息通过独立读线程进入 Rust，写消息也不会阻塞绘制循环。后端以约 33ms 合并消息补丁；状态定期原子保存，完成和退出时落盘。
+前后端通过子进程 stdio 的 JSON 行通信。UI 命令与 Codex RPC 是两条独立通道。鼠标事件、选区更新和输入编辑不会跨进程等待 Python。接收消息通过独立读线程进入 Rust，写消息也不会阻塞绘制循环。后端以约 33ms 合并消息补丁；状态定期原子保存，完成和退出时落盘。旧会话公开消息适配器另使用带进程随机令牌的本机回环端口，退出关闭，不对外网监听。
 
 主界面使用 Rust，**项目没有全部改写为纯 Rust**。保留 Python 通信层减少了同时替换两个状态机的风险。原生子代理现通过该服务接入新界面，父子关系、历史恢复、继续讨论和生命周期边界见 [功能交接](next-version-handoff.md)。
 
@@ -31,7 +32,7 @@
 
 当前创建成员由输入区的 `/add` 完成，按钮和 Ctrl+N 会预填命令；目录和颜色仍可补全。鼠标指针样式由宿主终端决定，未承诺与 Orca 原生选字完全相同。Shift+Enter 依赖终端是否单独上报，Ctrl+J 始终可换行。窄于 65 列时不绘制侧栏，可以通过 @ 补全或 `/focus` 切换。
 
-原生子代理聊天室仍是后续功能，不在此次迁移里冒充完成。V2 child 的直接输入限制、真实停止与完整历史合流见 [交接文档](next-version-handoff.md)。
+原生子代理已在迁移后接入；V2 child 的直接输入限制、真实停止与完整历史合流见 [交接文档](next-version-handoff.md)。独立成员公开通信不依赖子代理，见 [公开通信说明](public-messages.md)。
 
 ## 验证
 

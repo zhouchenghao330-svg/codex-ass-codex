@@ -196,7 +196,18 @@ impl Timeline {
                             " · {} · {}{}",
                             string(info, "action"),
                             string(e, "time"),
-                            if string(e, "state") == "failed" {
+                            if string(info, "transport") == "room" {
+                                match string(info, "delivery") {
+                                    "queued" => " · 待投递",
+                                    "delivering" => " · 投递中",
+                                    "delivered" => " · 已送达",
+                                    "steered" => " · 已追加",
+                                    "uncertain" => " · 投递未确认",
+                                    "failed" => " · 投递失败",
+                                    "stopped" => " · 已停止",
+                                    _ => "",
+                                }
+                            } else if string(e, "state") == "failed" {
                                 " · 失败"
                             } else if string(e, "state") == "working" {
                                 " · 发送中"
@@ -224,10 +235,10 @@ impl Timeline {
                 );
             } else if collapsed {
                 push(
-                    Line::styled(
-                        string(e, "body").lines().next().unwrap_or("").to_owned(),
-                        MUTED,
-                    ),
+                    history::parse(string(e, "body").lines().next().unwrap_or(""))
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default(),
                     format!("collapse:{id}"),
                     vec!["message".into()],
                     true,
@@ -237,6 +248,18 @@ impl Timeline {
                 for line in history::parse(string(e, "body")) {
                     push(line, String::new(), vec!["message".into()], false, false);
                 }
+            }
+            if !string(info, "delivery_error").is_empty() {
+                push(
+                    Line::styled(
+                        format!("投递状态：{}", string(info, "delivery_error")),
+                        MUTED,
+                    ),
+                    "meta".into(),
+                    vec![],
+                    true,
+                    false,
+                );
             }
         } else if sender == "you" {
             let labels = if show_all && !string(e, "batch_id").is_empty() {

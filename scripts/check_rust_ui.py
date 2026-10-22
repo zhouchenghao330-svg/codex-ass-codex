@@ -119,6 +119,40 @@ class RustUITests(unittest.TestCase):
         self.assertEqual({e["id"] for e in restored}, {e["id"] for e in messages})
         self.assertEqual(len(restored), 2)
 
+    def test_independent_public_messages_are_markdown_foldable_and_restored(self):
+        self.start(columns=125, rows=42)
+        self.command("/add A", finish="@A")
+        self.command("/add B", finish="@B")
+        self.command("@A peer-send B", finish="PUBLIC_ANSWER")
+        self.session.wait(lambda:"@A → @B" in self.session.visible and "@B → @A" in self.session.visible)
+        self.assertIn("PUBLIC_REQUEST", self.session.visible)
+        self.assertNotIn("**PUBLIC_REQUEST**", self.session.visible)
+        self.assertNotIn("**PUBLIC_ANSWER**", self.session.visible)
+        self.assertNotIn("Codex 未提供这条通信的正文", self.session.visible)
+        self.assertIn("已送达", self.session.visible)
+        row = self.row("@A → @B")
+        self.click(4, row)
+        self.session.wait(lambda:"请给出你的建议" not in self.session.visible)
+        self.assertNotIn("**PUBLIC_REQUEST**", self.session.visible)
+        self.click(4, self.row("@A → @B"))
+        self.session.wait(lambda:"请给出你的建议" in self.session.visible)
+        self.command("/focus B", finish="PUBLIC_REQUEST")
+        self.session.wait(lambda:"@B → @A" in self.session.visible)
+        self.command("/focus all", finish="PUBLIC_ANSWER")
+        self.finish()
+        state = json.loads((self.cwd/".codex-room/state.json").read_text())
+        public = [e for e in state["entries"] if (e.get("communication") or {}).get("transport") == "room"]
+        self.assertEqual([(e["sender"],e["target"]) for e in public], [("A","B"),("B","A")])
+        self.assertEqual(public[1]["communication"]["reply_to"], public[0]["id"])
+        self.assertEqual(len([e for e in state["entries"] if e["sender"] == "you"]), 1)
+        self.session.close(); self.session = None
+        self.start(columns=125, rows=42)
+        self.session.wait(lambda:"@B → @A" in self.session.visible and "PUBLIC_ANSWER" in self.session.visible)
+        self.finish()
+        restored = json.loads((self.cwd/".codex-room/state.json").read_text())
+        self.assertEqual({e["id"] for e in restored["entries"] if (e.get("communication") or {}).get("transport") == "room"},
+                         {e["id"] for e in public})
+
     def test_native_child_original_output_multiround_and_restart(self):
         os.environ["CODEX_ROOM_CODEX_COMMAND"] = json.dumps([str(ROOT/".venv/bin/python"), str(ROOT/"tests/fake_native_codex.py")])
         self.start(columns=120, rows=36)

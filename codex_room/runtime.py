@@ -1,4 +1,4 @@
-"""Version-2 Codex app-server transport. Never copy credentials or rebuild prompts."""
+"""Version-2 Codex app-server transport, preserving Codex-owned session history."""
 from __future__ import annotations
 
 import asyncio
@@ -54,6 +54,8 @@ class CodexClient:
         # A synchronous observer claims child requests before the reader can
         # reject them. It must never await RPC from inside the reader task.
         self.observer = None
+        self.thread_options = None
+        self.input_context = None
 
     async def start(self) -> None:
         try:
@@ -203,6 +205,11 @@ class CodexClient:
             params["model"] = agent.model
         if agent.effort:
             params["config"] = {"model_reasoning_effort": agent.effort}
+        if self.thread_options:
+            options = self.thread_options(agent)
+            params["config"] = {**params.get("config", {}), **options.get("config", {})}
+            params.update({k: v for k, v in options.items() if k != "config"})
+        new_thread = not agent.thread_id
         if agent.thread_id:
             params["threadId"] = agent.thread_id
             params["excludeTurns"] = True
@@ -213,6 +220,8 @@ class CodexClient:
             result = await self.request("thread/start", params)
         agent.legacy_instructions = False
         agent.thread_id = result["thread"]["id"]
+        if new_thread and params.get("dynamicTools"):
+            agent.room_tool_version = 1
         self.loaded.add(agent.thread_id)
         if not agent.model:
             agent.model = result.get("model", "")
@@ -225,13 +234,22 @@ class CodexClient:
         return [{"type": "text", "text": text},
                 *({"type": "localImage", "path": path} for path in images or [])]
 
+    def turn_input(self, thread_id, text, images=None):
+        items = self.input_items(text, images)
+        context = self.input_context(thread_id) if self.input_context else ""
+        if context:
+            # Keep the actual task as its own item, without changing the text
+            # stored/displayed as the user's message.
+            items.insert(0, {"type": "text", "text": context})
+        return items
+
     async def steer_turn(self, thread_id: str, text: str, *, images: list[str] | None = None) -> bool:
         turn_id = self.active.get(thread_id)
         if not turn_id:
             return False
         try:
             await self.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
-                                             "input": self.input_items(text, images)})
+                                             "input": self.turn_input(thread_id, text, images)})
         except CodexError as exc:
             # Only a definite rejection due to completion may start a fresh turn.
             # Timeouts and transport failures can already have delivered the input.
@@ -252,7 +270,7 @@ class CodexClient:
         self.queues[thread_id] = queue
         cwd = agent.cwd or self.cwd
         policy, sandbox = permission_settings(agent.permission, cwd)
-        params = {"threadId": thread_id, "input": self.input_items(text, images),
+        params = {"threadId": thread_id, "input": self.turn_input(thread_id, text, images),
                   "cwd": cwd, "approvalPolicy": policy, "sandboxPolicy": sandbox}
         if agent.model:
             params["model"] = agent.model

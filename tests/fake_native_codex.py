@@ -149,7 +149,7 @@ async def main():
                 tid = params["threadId"]
                 assert not state["threads"][tid].get("parentThreadId"), "V2 child direct input forbidden"
                 turn = turn_start(tid)
-                tasks[turn["id"]] = asyncio.create_task(root_run(tid, turn, params["input"][0]["text"]))
+                tasks[turn["id"]] = asyncio.create_task(root_run(tid, turn, next(item["text"] for item in params["input"] if item["type"] == "text" and not item["text"].startswith("[Codex Room host context;"))))
                 result = {"turn": turn}
             elif method == "turn/steer":
                 tid, turn_id = params["threadId"], params["expectedTurnId"]
@@ -159,7 +159,7 @@ async def main():
                     send({"id": msg["id"], "error": {"code": -32600, "message": "no active turn"}})
                     continue
                 # Notification precedes RPC ACK to reproduce the delivery race.
-                await relay(tid, turn, params["input"][0]["text"])
+                await relay(tid, turn, next(item["text"] for item in params["input"] if item["type"] == "text" and not item["text"].startswith("[Codex Room host context;")))
             elif method == "turn/interrupt":
                 task = tasks.get(params["turnId"])
                 if task:
