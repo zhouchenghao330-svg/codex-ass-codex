@@ -14,6 +14,7 @@ from time import monotonic
 
 from rich.cells import cell_len
 from rich.console import Group
+from rich.style import Style as RichStyle
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -33,6 +34,7 @@ from .member_config import parse_add, resolve_directory
 from .completion import Completion, CompletionEngine, is_room_command
 from .selectable import ConversationScreen, SelectableStatic
 from .composer import ComposerInput
+from .attachments import Attachment, Prompt
 from .rendering import ReplyVisual
 
 
@@ -151,6 +153,11 @@ class ReplyBody(SelectableStatic):
         self.parent.toggle_tool_item(index, part)
 
 
+class ReplyHeader(SelectableStatic):
+    def action_toggle_reply(self) -> None:
+        self.parent.toggle_reply()
+
+
 class MessageCard(Vertical):
     def __init__(self, entry: Entry, agents: dict[str, Agent]) -> None:
         super().__init__(classes=f"message {entry.sender if entry.sender in ('you', 'system') else 'agent'}")
@@ -167,7 +174,9 @@ class MessageCard(Vertical):
         self.animation_frame = 0
         self._body_key = None
         self._rendered_width = None
-        self.header = SelectableStatic(classes="message-header")
+        self.header = ReplyHeader(classes="message-header")
+        self.preview = ReplyHeader(classes="reply-preview")
+        self.preview.display = False
         self.body = ReplyBody(classes="message-body")
         self.progress = SelectableStatic(classes="working-status")
         self.work_summary = SelectableStatic(classes="work-summary")
@@ -175,6 +184,7 @@ class MessageCard(Vertical):
 
     def compose(self) -> ComposeResult:
         yield self.header
+        yield self.preview
         yield self.body
         yield self.progress
         yield self.work_summary
@@ -234,6 +244,25 @@ class MessageCard(Vertical):
         self.body.screen.clear_selection()
         self.refresh_entry()
 
+    def toggle_reply(self) -> None:
+        if self.entry.sender not in self.agents:
+            return
+        self.entry.collapsed = not self.entry.collapsed
+        self.screen.clear_selection()
+        self.app.dirty = True
+        self.refresh_entry()
+
+    def refresh_preview(self) -> None:
+        # One readable line, with the complete reply retained for expansion.
+        width = self.content_size.width or 80
+        first = re.search(r"\S", self.entry.body)
+        line = self.entry.body[first.start():first.start() + width * 2].split("\n", 1)[0] if first else ""
+        line = re.sub(r"[`*_]", "", line.lstrip("#> -"))
+        text = Text(line or ("正在工作…" if self.entry.state == "working" else "工具调用记录"), style=FOREGROUND)
+        text.truncate(width, overflow="ellipsis")
+        text.stylize(RichStyle(meta={"@click": "toggle_reply"}))
+        update_text(self.preview, text)
+
     def refresh_entry(self) -> None:
         entry = self.entry
         text = Text()
@@ -247,6 +276,8 @@ class MessageCard(Vertical):
                 text.append(f"@{target.name}", style=target.accent)
             else:
                 agent = self.agents[entry.sender]
+                text.append("▸ " if entry.collapsed else "▾ ",
+                            style=RichStyle(color=MUTED, meta={"@click": "toggle_reply"}))
                 text.append(agent.label, style=f"bold {self.reply_colors.accent}")
                 text.append(f"  @{agent.name}", style=self.reply_colors.muted)
             if entry.state == "queued":
@@ -259,7 +290,7 @@ class MessageCard(Vertical):
                 text.append("   · 失败", style="#e8b878")
             if entry.sender == "you":
                 text.append("  ")
-                text.append(entry.body, style=FOREGROUND)
+                text.append(entry.display_body if entry.display_body is not None else entry.body, style=FOREGROUND)
             else:
                 if agent.cwd:
                     separator = "   · ⌂ "
@@ -269,20 +300,25 @@ class MessageCard(Vertical):
                         text.append(f"{separator}{directory}", style=MUTED)
                     self.header.tooltip = agent.cwd
                 update_text(self.header, text)
-                self.body.display = bool(entry.body or entry.blocks or entry.state != "working")
+                self.set_class(entry.collapsed, "reply-collapsed")
+                self.preview.display = entry.collapsed
+                if entry.collapsed:
+                    self.refresh_preview()
+                self.body.display = not entry.collapsed and bool(entry.body or entry.blocks or entry.state != "working")
                 width = self.content_size.width or 80
                 key = (entry.body, tuple((block.id, block.kind, block.text, block.title, block.status, block.exit_code) for block in entry.blocks),
                        self.tools_expanded, tuple(self.tool_group_levels.items()), tuple(self.tool_item_expanded.items()), width, agent.color)
-                if key != self._body_key:
+                if not entry.collapsed and key != self._body_key:
                     self.body.update(render_reply(entry, self.tools_expanded, width, agent.color,
                         group_levels=self.tool_group_levels, expanded_items=self.tool_item_expanded, interactive=True))
                     self._body_key = key
-                    self._rendered_width = self.content_size.width
+                self._rendered_width = self.content_size.width
                 self.refresh_working()
                 self.refresh_completion()
                 return
         update_text(self.header, text, layout=True)
         self.body.display = False
+        self.preview.display = False
         self.progress.display = False
         self.work_summary.display = False
 
@@ -388,6 +424,9 @@ class Help(ModalScreen[None]):
                 "[b]/命令、成员、模型、权限、目录和颜色[/] 均支持补全\n"
                 "[b]Ctrl+B[/] 展开 / 收起成员\n"
                 "[b]Ctrl+T[/] 展开 / 收起工具调用详情\n"
+                "点击回复前的 [b]▾ / ▸[/] 收起 / 展开整条回复\n"
+                "长粘贴 / 图片显示为块，退格整块删除\n"
+                "[b]Alt+Enter[/] 展开光标处的长粘贴原文\n"
                 "[b]Ctrl+Q[/] 退出               [b]Esc[/] 回到输入框\n\n"
                 "[#788294]默认连接本机 Codex，沿用登录和项目配置。\n"
                 "成员会话和配置保存在项目的 .codex-room/ 中。\n"
@@ -464,7 +503,7 @@ class CodexRoom(App):
         self.defaults = {"model": "", "effort": ""}
         self.store = None if demo else RoomStore(state_dir or self.cwd / ".codex-room")
         self.saved = self.store.load() if self.store else {}
-        self.input_history: list[str] = self.saved.get("input_history", [
+        self.input_history: list[str | dict] = self.saved.get("input_history", [
             f"@{entry['target']} {entry['body']}" for entry in self.saved.get("entries", [])
             if entry.get("sender") == "you" and entry.get("target") and entry.get("body")
         ])
@@ -633,7 +672,8 @@ class CodexRoom(App):
         if position != self.dismissed_completion or explicit:
             self.dismissed_completion = None
         context = self.completion_engine.complete(
-            *position, self.agents, self.cwd, self.client.models if self.client else [], explicit=explicit)
+            composer.completion_text, composer.cursor_position, self.agents, self.cwd,
+            self.client.models if self.client else [], explicit=explicit)
         if context is None:
             menu.display = False
             self.completion_open = False
@@ -685,7 +725,11 @@ class CodexRoom(App):
         composer = self.room_screen.query_one("#message-input", ComposerInput)
         value, cursor = context.apply(composer.value, item)
         self.close_completions()
-        composer.value = value
+        suffix = composer.value[context.end:]
+        replacement_end = len(value) - len(suffix)
+        composer.replace(value[context.start:replacement_end],
+                         composer.document.get_location_from_index(context.start),
+                         composer.document.get_location_from_index(context.end), maintain_selection_offset=False)
         composer.cursor_position = cursor
         if item.directory or (context.kind in {"color", "directory"} and item.value != "--color"):
             # Enter can use this value; another Tab explores the next argument.
@@ -924,13 +968,15 @@ class CodexRoom(App):
     async def on_composer_input_submitted(self, event: ComposerInput.Submitted) -> None:
         if event.input.id != "message-input":
             return
-        value = event.value.strip()
+        prompt = event.prompt.strip()
+        value = prompt.text
         if not value:
             return
-        accepted = await self.submit(value)
+        accepted = await self.submit(value, attachments=prompt.attachments)
         if accepted:
-            if not self.input_history or self.input_history[-1] != value:
-                self.input_history.append(value)
+            record = prompt.dump()
+            if not self.input_history or self.input_history[-1] != record:
+                self.input_history.append(record)
                 self.dirty = True
             event.input.reset_history_navigation()
             if event.input.value.strip() == value:
@@ -946,8 +992,9 @@ class CodexRoom(App):
         elif event.button.id in {"toggle-sidebar", "close-sidebar"}:
             self.action_toggle_sidebar()
 
-    async def submit(self, value: str) -> bool:
-        if is_room_command(value):
+    async def submit(self, value: str, *, attachments: list[Attachment] | None = None) -> bool:
+        prompt = Prompt(value, attachments or [])
+        if not prompt.attachments and is_room_command(value):
             return await self.command(value)
         name, body = self.selected, value
         if value.startswith("@"):
@@ -956,10 +1003,11 @@ class CodexRoom(App):
                 self.notify("写上 @名字 和要发送的内容。", severity="warning")
                 return False
             name, body = match.group(1).lower(), match.group(2).strip()
+            prompt = prompt.slice(match.start(2)).strip()
         if name not in self.agents:
             self.notify(f"没有 @{name}，可以用 /add {name} 创建。" if name else "先用 /add 名字 或 Ctrl+N 创建 Codex。", severity="warning")
             return False
-        if is_room_command(body):
+        if not prompt.attachments and is_room_command(body):
             accepted = await self.command(body, target=name)
             if accepted and name in self.agents:
                 self.select(name)
@@ -967,9 +1015,13 @@ class CodexRoom(App):
         if not self.connected:
             self.notify("Codex 尚未连接；连接失败时可用 /reconnect 重试。", severity="warning")
             return False
+        if any(not Path(path).is_file() for path in prompt.images):
+            self.notify("图片文件已不存在，请重新粘贴；输入内容已保留。", severity="warning")
+            return False
         # Routing is explicit: mentioning another member later in a message is just text.
         agent = self.agents[name]
-        entry = Entry("you", body, name, "queued" if agent.busy else "done")
+        entry = Entry("you", prompt.expand(), name, "queued" if agent.busy else "done",
+                      display_body=prompt.text if prompt.attachments else None, attachments=prompt.attachments)
         await self.add_entry(entry)
         agent.queue.append(entry)
         if self.selected != name:
@@ -1181,7 +1233,8 @@ class CodexRoom(App):
                 try:
                     if self.demo:
                         agent.steered_inputs.append(request.body)
-                    elif not self.client or not agent.thread_id or not await self.client.steer_turn(agent.thread_id, request.body):
+                    elif not self.client or not agent.thread_id or not await self.client.steer_turn(
+                            agent.thread_id, request.body, images=request.image_paths):
                         break
                 except CodexError as exc:
                     # Never silently resend a request whose acceptance is uncertain.
@@ -1242,7 +1295,7 @@ class CodexRoom(App):
                         await asyncio.sleep(0.045 * self.speed)
                     answer.state = "done"
                 else:
-                    await self.real_reply(name, request.body, answer)
+                    await self.real_reply(name, request.body, answer, images=request.image_paths)
                 answer.record_finish(monotonic() - started)
                 self.refresh_answer(answer)
                 self.active_entries.pop(name, None)
@@ -1292,7 +1345,7 @@ class CodexRoom(App):
         if follow:
             self.call_after_refresh(self.scroll_bottom)
 
-    async def real_reply(self, name: str, text: str, answer: Entry) -> None:
+    async def real_reply(self, name: str, text: str, answer: Entry, *, images: list[str] | None = None) -> None:
         if not self.client or not self.connected:
             raise CodexError("Codex 连接已断开，使用 /reconnect 重试。")
         agent = self.agents[name]
@@ -1389,7 +1442,7 @@ class CodexRoom(App):
             else:
                 self.cards[id(answer)].refresh_working(self.frame)
 
-        turn = await self.client.run_turn(settings, text, receive, on_started=lambda: self.deliver_followups(name))
+        turn = await self.client.run_turn(settings, text, receive, on_started=lambda: self.deliver_followups(name), images=images)
         answer.state = "stopped" if turn.get("status") == "interrupted" else "done"
         answer.finish_tools("stopped" if answer.state == "stopped" else "completed")
         if not answer.body and not answer.blocks:

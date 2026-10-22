@@ -12,6 +12,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from .colors import CODE_BACKGROUND, FOREGROUND, LINK, MUTED, member_colors
+from .attachments import Attachment
 from .tool_details import command_title, render_tool_group, tool_summary
 
 
@@ -107,9 +108,17 @@ class Entry:
     started_at: str | None = None
     finished_at: str | None = None
     duration_seconds: float | None = None
+    display_body: str | None = None
+    attachments: list[Attachment] = field(default_factory=list)
+    collapsed: bool = False
 
     def __post_init__(self) -> None:
         self.blocks = [ReplyBlock(**block) if isinstance(block, dict) else block for block in self.blocks]
+        self.attachments = [Attachment(**item) if isinstance(item, dict) else item for item in self.attachments]
+
+    @property
+    def image_paths(self) -> list[str]:
+        return [item.content for item in self.attachments if item.kind == "image"]
 
     def sync_body(self) -> None:
         self.body = "\n\n".join(block.text for block in self.blocks if block.kind == "text" and block.text)

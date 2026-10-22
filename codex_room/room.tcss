@@ -20,6 +20,8 @@ Screen > .screen--selection { background: #e9dfb8; color: #20251f; }
 .message.system { color: #788274; }
 .message-header, .message-body { height: auto; }
 .message.agent > .message-header { height: 1; }
+.reply-preview { height: 1; }
+.reply-collapsed > .work-summary { margin-top: 0; }
 .working-status { height: 1; color: #93988e; }
 .work-summary { height: 1; margin-top: 1; color: #93988e; }
 

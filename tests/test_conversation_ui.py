@@ -12,7 +12,7 @@ from textual.widgets import Input
 
 from codex_room.app import ComposerInput, AddMember, CodexRoom
 from codex_room.runtime import CodexClient
-from codex_room.transcript import Entry
+from codex_room.transcript import Entry, ReplyBlock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +28,93 @@ def visible_text(widget):
 
 
 class ConversationUITests(unittest.IsolatedAsyncioTestCase):
+    async def test_click_reply_fold_keeps_identity_status_and_streamed_content(self):
+        app = CodexRoom(demo=True, cwd=ROOT)
+        async with app.run_test(size=(100, 36)) as pilot:
+            await app.create_member("a")
+            await app.create_member("b")
+            entry = Entry("a", "**先检查项目结构。**\n\n" + "长回复正文。\n\n" * 12,
+                          state="working")
+            app.agents["a"].busy = True
+            card = await app.add_entry(entry)
+            other = await app.add_entry(Entry("b", "Another member stays expanded."))
+            await pilot.pause()
+            app.query_one("#timeline").scroll_home(animate=False, immediate=True)
+            await pilot.pause()
+            expanded_height = card.size.height
+            composer = app.query_one("#message-input", ComposerInput)
+            composer.value = "keep this draft"
+            await pilot.click(card.header, offset=(0, 0))
+            self.assertTrue(entry.collapsed)
+            self.assertFalse(card.body.display)
+            self.assertTrue(card.preview.display)
+            self.assertTrue(card.progress.display)
+            self.assertIn("Working", visible_text(card.progress))
+            self.assertIn("先检查项目结构", visible_text(card.preview))
+            self.assertIn("codex-ass-codex", visible_text(card.header))
+            self.assertLess(card.size.height, expanded_height)
+            self.assertTrue(other.body.display)
+            self.assertEqual(composer.value, "keep this draft")
+
+            with patch.object(card.body, "update", wraps=card.body.update) as render:
+                entry.body += "\n\nNEW STREAMED CONTENT"
+                app.refresh_answer(entry)
+                app.action_toggle_tools()
+                await pilot.pause()
+                self.assertEqual(render.call_count, 0)
+            card.preview.text_select_all()
+            await pilot.pause()
+            self.assertNotIn("长回复正文", app.screen.get_selected_text())
+            self.assertNotIn("NEW STREAMED CONTENT", app.screen.get_selected_text())
+            entry.state = "done"
+            entry.record_finish(83)
+            app.refresh_answer(entry)
+            await pilot.pause()
+            self.assertTrue(entry.collapsed)
+            self.assertFalse(card.progress.display)
+            self.assertIn("Worked for 1m 23s", visible_text(card.work_summary))
+            await pilot.click(card.preview, offset=(1, 0))
+            self.assertFalse(entry.collapsed)
+            self.assertTrue(card.body.display)
+            self.assertFalse(card.preview.display)
+            self.assertIn("NEW STREAMED CONTENT", "\n".join(card.body.selection_lines()))
+
+    async def test_folded_reply_and_tool_state_survive_filter_and_restart(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("codex_room.app.CodexClient", client):
+            state = Path(tmp)
+            app = CodexRoom(cwd=ROOT, state_dir=state)
+            async with app.run_test(size=(110, 36)) as pilot:
+                await app.connection_task
+                await app.create_member("a")
+                entry = Entry("a", "Preserve reply.", blocks=[ReplyBlock("intro", "text", "Preserve reply."),
+                    ReplyBlock("tool", "command", "HIDDEN_OUTPUT", "pwd", "completed", 0)])
+                entry.record_finish(24)
+                card = await app.add_entry(entry)
+                card.set_tools_group(1, 2)
+                await pilot.pause()
+                await pilot.click(card.header, offset=(0, 0))
+                self.assertTrue(entry.collapsed)
+                app.select("a", single=True)
+                app.action_all_messages()
+                await pilot.pause()
+                self.assertTrue(entry.collapsed)
+                await pilot.click(card.header, offset=(0, 0))
+                self.assertEqual(card.tool_group_levels[1], 2)
+                self.assertIn("HIDDEN_OUTPUT", "\n".join(card.body.selection_lines()))
+                await pilot.click(card.header, offset=(0, 0))
+                app.save_state()
+            restored = CodexRoom(cwd=ROOT, state_dir=state)
+            async with restored.run_test(size=(110, 36)) as pilot:
+                await restored.connection_task
+                entry = next(item for item in restored.entries if item.sender == "a")
+                card = restored.cards[id(entry)]
+                self.assertTrue(entry.collapsed)
+                self.assertFalse(card.body.display)
+                self.assertTrue(card.work_summary.display)
+                await pilot.click(card.header, offset=(0, 0))
+                self.assertTrue(card.body.display)
+                self.assertIn("Preserve reply", "\n".join(card.body.selection_lines()))
+
     async def test_click_typing_paste_and_window_focus_keep_composer_ready(self):
         app = CodexRoom(demo=True, cwd=ROOT)
         async with app.run_test(size=(100, 32)) as pilot:

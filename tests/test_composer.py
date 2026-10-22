@@ -71,7 +71,7 @@ class ComposerTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("X")
             self.assertEqual(editor.value, "X第一行\n第二行\nx")
 
-    async def test_long_paths_scroll_inside_editor_and_completion_still_works(self):
+    async def test_long_pastes_fold_and_completion_still_works(self):
         app = CodexRoom(demo=True)
         async with app.run_test(size=(86, 26)) as pilot:
             await app.create_member("alice")
@@ -80,9 +80,10 @@ class ComposerTests(unittest.IsolatedAsyncioTestCase):
             path = "/very-long-component" * 100
             app.post_message(events.Paste(path))
             await pilot.pause()
-            self.assertEqual(editor.value, path)
-            self.assertLessEqual(editor.region.height, 8)
-            self.assertGreater(editor.scroll_y, 0)
+            self.assertEqual(editor.value, "[Pasted Content 2000 chars]")
+            self.assertEqual(editor.prompt.expand(), path)
+            self.assertEqual(editor.region.height, 1)
+            self.assertEqual(editor.scroll_y, 0)
             self.assertEqual(editor.scroll_x, 0)
             editor.value = "@"
             editor.cursor_position = 1

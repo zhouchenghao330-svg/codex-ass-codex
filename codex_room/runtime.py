@@ -172,13 +172,18 @@ class CodexClient:
             agent.effort = result.get("reasoningEffort") or ""
         return result
 
-    async def steer_turn(self, thread_id: str, text: str) -> bool:
+    @staticmethod
+    def input_items(text: str, images: list[str] | None = None) -> list[dict]:
+        return [{"type": "text", "text": text},
+                *({"type": "localImage", "path": path} for path in images or [])]
+
+    async def steer_turn(self, thread_id: str, text: str, *, images: list[str] | None = None) -> bool:
         turn_id = self.active.get(thread_id)
         if not turn_id:
             return False
         try:
             await self.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
-                                             "input": [{"type": "text", "text": text}]})
+                                             "input": self.input_items(text, images)})
         except CodexError as exc:
             # Only a definite rejection due to completion may start a fresh turn.
             # Timeouts and transport failures can already have delivered the input.
@@ -190,7 +195,8 @@ class CodexClient:
         return True
 
     async def run_turn(self, agent, text: str, on_event: Callable[[dict], Awaitable[None]],
-                       *, on_started: Callable[[], Awaitable[None]] | None = None) -> dict:
+                       *, on_started: Callable[[], Awaitable[None]] | None = None,
+                       images: list[str] | None = None) -> dict:
         thread_id = agent.thread_id
         if not thread_id:
             raise CodexError("尚未创建 Codex 会话。")
@@ -198,7 +204,7 @@ class CodexClient:
         self.queues[thread_id] = queue
         cwd = agent.cwd or self.cwd
         policy, sandbox = permission_settings(agent.permission, cwd)
-        params = {"threadId": thread_id, "input": [{"type": "text", "text": text}],
+        params = {"threadId": thread_id, "input": self.input_items(text, images),
                   "cwd": cwd, "approvalPolicy": policy, "sandboxPolicy": sandbox}
         if agent.model:
             params["model"] = agent.model
