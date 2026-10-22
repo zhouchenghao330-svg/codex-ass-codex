@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,17 @@ async def drag(pilot, widget, start, end, end_widget=None):
     await pilot.mouse_down(widget, offset=start)
     await pilot.hover(end_widget or widget, offset=end)
     await pilot.mouse_up(end_widget or widget, offset=end)
+    await pilot.pause()
+
+
+def mouse_event(app, kind, x, y, *, delta_y=0):
+    app.screen._forward_event(kind(None, x, y, 0, delta_y, 1, False, False, False))
+
+
+async def wait_for(pilot, condition):
+    async with asyncio.timeout(3):
+        while not condition():
+            await pilot.pause(0.02)
     await pilot.pause()
 
 
@@ -331,3 +343,151 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
                 body.selection_updated(Selection(Offset(0, 0), Offset(6, 20)))
                 regions = refresh.call_args.args
                 self.assertEqual(regions, (Region(0, 20, body.size.width, 1),))
+
+    async def test_stationary_pointer_keeps_selecting_during_auto_scroll_both_ways(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("a", "\n\n".join(
+                f"PARAGRAPH {i:03}: selection text." for i in range(160))))
+            await pilot.pause()
+            timeline = app.query_one("#timeline")
+            timeline.scroll_home(animate=False, immediate=True)
+            await pilot.pause()
+            x, y = card.body.content_region.x, card.body.content_region.y
+            bottom = timeline.content_region.bottom - 1
+            mouse_event(app, events.MouseDown, x, y)
+            mouse_event(app, events.MouseMove, x + 8, bottom, delta_y=bottom - y)
+            await wait_for(pilot, lambda: (timeline.scroll_y > 5
+                and card.body in app.screen.selections and app.screen.selections[card.body].end is not None))
+            first = app.screen.get_selected_text()
+            end = app.screen.selections[card.body].end.y
+            scroll = timeline.scroll_y
+            # No additional mouse movement: scrolling itself must extend the range.
+            await wait_for(pilot, lambda: (timeline.scroll_y > scroll + 8
+                and app.screen.selections[card.body].end.y > end + 5))
+            selected = app.screen.get_selected_text()
+            self.assertTrue(selected.startswith("PARAGRAPH 000:"))
+            self.assertGreater(len(selected), len(first))
+            mouse_event(app, events.MouseUp, x + 8, bottom)
+            await pilot.pause()
+            stopped = timeline.scroll_y
+            await pilot.pause(0.08)
+            self.assertEqual(timeline.scroll_y, stopped)
+            await pilot.press("ctrl+c")
+            self.assertEqual(app.clipboard, app.screen.get_selected_text())
+
+            app.screen.clear_selection()
+            timeline.scroll_to(y=85, animate=False, immediate=True)
+            await pilot.pause()
+            y = timeline.content_region.y + 5
+            anchor = app.screen.get_widget_and_offset_at(x, y)[1]
+            mouse_event(app, events.MouseDown, x, y)
+            top = timeline.content_region.y
+            mouse_event(app, events.MouseMove, x, top, delta_y=top - y)
+            await wait_for(pilot, lambda: timeline.scroll_y < 75)
+            first_start = app.screen.selections[card.body].start.y
+            await wait_for(pilot, lambda: app.screen.selections[card.body].start.y < first_start - 5)
+            self.assertEqual(app.screen.selections[card.body].end, anchor)
+            mouse_event(app, events.MouseUp, x, top)
+            self.assertTrue(app.screen.selections)
+
+    async def test_cross_message_auto_scroll_stays_in_chat_when_pointer_leaves_it(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            await app.create_member("sidebar-only")
+            first = None
+            for i in range(35):
+                card = await app.add_entry(Entry("a", f"MESSAGE {i:02}\n\nBody {i:02}: selection text."))
+                first = first or card
+            app.action_toggle_sidebar()
+            await pilot.pause()
+            timeline = app.query_one("#timeline")
+            timeline.scroll_home(animate=False, immediate=True)
+            await pilot.pause()
+            x, y = first.body.content_region.x, first.body.content_region.y
+            bottom = timeline.content_region.bottom - 1
+            mouse_event(app, events.MouseDown, x, y)
+            mouse_event(app, events.MouseMove, x + 8, bottom, delta_y=bottom - y)
+            await wait_for(pilot, lambda: first.body.content_region.bottom < timeline.content_region.y)
+            selected = app.screen.get_selected_text()
+            self.assertTrue(selected.startswith("MESSAGE 00"), selected)
+            self.assertIn("MESSAGE 05", selected)
+            anchor = app.screen._select_state.start
+            background = Entry("sidebar-only", "Background output.", state="working")
+            await app.add_entry(background)
+            background.body += "\n\nNew streamed paragraph."
+            app.refresh_answer(background)
+            await pilot.pause()
+            self.assertEqual(app.screen._select_state.start, anchor)
+            self.assertTrue(app.screen.get_selected_text().startswith("MESSAGE 00"))
+            self.assertLess(timeline.scroll_y, timeline.max_scroll_y)
+            # Crossing into the member pane must not select or scroll it.
+            sidebar_scroll = app.query_one("#members").scroll_y
+            mouse_event(app, events.MouseMove, 2, bottom)
+            await pilot.pause()
+            self.assertNotIn("sidebar-only", app.screen.get_selected_text())
+            self.assertEqual(app.query_one("#members").scroll_y, sidebar_scroll)
+            self.assertTrue(all(timeline in widget.ancestors for widget in app.screen.selections))
+            # The composer/footer below the conversation is also outside its domain.
+            outside_y = app.size.height - 1
+            mouse_event(app, events.MouseMove, x, outside_y, delta_y=outside_y - bottom)
+            await pilot.pause()
+            mouse_event(app, events.MouseUp, x, outside_y)
+            await pilot.pause()
+            selected = app.screen.get_selected_text()
+            self.assertTrue(selected.startswith("MESSAGE 00"))
+            self.assertNotIn("F1 帮助", selected)
+            self.assertTrue(all(timeline in widget.ancestors for widget in app.screen.selections))
+            await pilot.press("ctrl+c")
+            self.assertEqual(app.clipboard, selected)
+
+    async def test_sidebar_cannot_start_text_selection_and_late_follow_keeps_drag_anchor(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("a", "Keep this anchor.\n\nSecond paragraph."))
+            app.action_toggle_sidebar()
+            await pilot.pause()
+            member = app.query_one("#member-a")
+            await pilot.mouse_down(member, offset=(2, 0))
+            await pilot.hover(card.body, offset=(8, 0))
+            await pilot.mouse_up(card.body, offset=(8, 0))
+            self.assertFalse(app.screen.selections)
+            self.assertFalse(app.screen._selecting)
+
+            await pilot.mouse_down(card.body, offset=(0, 0))
+            app.post_message(events.AppFocus())
+            await pilot.pause()
+            self.assertTrue(app.screen._selecting)
+            await app.add_entry(Entry("a", "\n\n".join(f"new output {i}" for i in range(80))))
+            await pilot.pause()
+            self.assertEqual(app.query_one("#timeline").scroll_y, 0)
+            self.assertIs(app.screen._select_state.start.content_widget, card.body)
+            await pilot.hover(card.body, offset=(9, 0))
+            await pilot.mouse_up(card.body, offset=(9, 0))
+            self.assertEqual(app.screen.get_selected_text(), "Keep this")
+
+    async def test_empty_line_in_user_message_is_a_logical_boundary(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await app.create_member("a")
+            card = await app.add_entry(Entry("you", "First paragraph\n\nSecond paragraph", target="a"))
+            await pilot.pause()
+            line = card.header.selection_lines()[0]
+            column = cell_len(line[:line.index("First")])
+            await drag(pilot, card.header, (column, 0), (0, 1))
+            self.assertEqual(app.screen.get_selected_text(), "First paragraph")
+
+    async def test_cross_message_endpoint_at_start_does_not_copy_the_whole_reply(self):
+        app = CodexRoom(demo=True)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await app.create_member("a")
+            first = await app.add_entry(Entry("a", "Start here."))
+            second = await app.add_entry(Entry("a", "Do not include this paragraph."))
+            await pilot.pause()
+            await drag(pilot, first.body, (0, 0), (0, 0), second.body)
+            selected = app.screen.get_selected_text()
+            self.assertTrue(selected.startswith("Start here."))
+            self.assertNotIn("Do not include", selected)

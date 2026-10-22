@@ -542,7 +542,7 @@ class CodexRoom(App):
 
     def on_app_focus(self) -> None:
         if (hasattr(self, "room_screen") and self.screen is self.room_screen
-                and not self.room_screen.selections):
+                and not self.room_screen.selections and not self.room_screen._selecting):
             self.action_composer()
 
     def on_click(self, event: events.Click) -> None:
@@ -595,10 +595,12 @@ class CodexRoom(App):
         )
 
     def scroll_bottom(self) -> None:
-        if not self.is_running or self.shutting_down:
+        if (not self.is_running or self.shutting_down
+                or self.room_screen._selecting or self.room_screen.selections):
             return
-        # Completion metadata and wrapped content can change height on the next layout.
-        self.room_screen.query_one("#timeline", VerticalScroll).scroll_end(animate=False)
+        # Callers already wait for layout. A second deferred callback would
+        # bypass the selection guard if a drag starts before it runs.
+        self.room_screen.query_one("#timeline", VerticalScroll).scroll_end(animate=False, immediate=True)
 
     def tick(self) -> None:
         if not self.is_running or self.shutting_down:

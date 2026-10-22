@@ -10,7 +10,7 @@ from textual import events
 from textual.geometry import Offset, Region
 from textual.reactive import var
 from textual.screen import Screen
-from textual.selection import Selection, SelectState
+from textual.selection import SELECT_ALL, SelectEnd, Selection, SelectState
 from textual.strip import Strip
 from textual.visual import RichVisual, Visual
 from textual.widget import Widget
@@ -160,6 +160,15 @@ class SelectableStatic(Static):
             # An empty rendered row is still a precise endpoint. Returning None
             # makes Textual fall back to selecting the whole content widget.
             return Offset(0, y)
+        if end is None:
+            # Native Content uses logical line offsets, including empty lines
+            # between wrapped paragraphs in the user's messages.
+            for previous_y in range(y - 1, -1, -1):
+                for segment in self.render_line(previous_y):
+                    previous = segment.style.meta.get("offset") if segment.style is not None else None
+                    if previous is not None and previous[1] is not None:
+                        return Offset(0, previous[1] + y - previous_y)
+            return Offset(0, y)
         return end
 
     def selection_lines(self) -> tuple[str, ...]:
@@ -196,8 +205,8 @@ class SelectableStatic(Static):
         if not isinstance(visual, SelectableVisual):
             return super().get_selection(selection)
         lines = self.selection_lines()
-        start = selection.start or Offset(0, 0)
-        end = selection.end or Offset(len(lines[-1]) if lines else 0, len(lines) - 1)
+        start = selection.start if selection.start is not None else Offset(0, 0)
+        end = selection.end if selection.end is not None else Offset(len(lines[-1]) if lines else 0, len(lines) - 1)
         selected = list(lines[start.y:end.y + 1])
         if not selected:
             return "", "\n"
@@ -219,11 +228,90 @@ class ConversationScreen(Screen):
     # Moving focus out of the composer must not redraw the whole transcript.
     focused: var[Widget | None] = var(None)
 
+    def on_mount(self) -> None:
+        self.screen_layout_refresh_signal.subscribe(self, self._update_select)
+
+    @staticmethod
+    def _timeline_for(widget: Widget | None) -> Widget | None:
+        if widget is not None:
+            return next((node for node in widget.ancestors_with_self if node.id == "timeline"), None)
+        return None
+
+    @staticmethod
+    def _chat_widgets(timeline: Widget) -> list[SelectableStatic]:
+        # Displayed means part of the conversation, including content scrolled
+        # out of view. Hidden member conversations and collapsed tools stay out.
+        return [widget for widget in timeline.query(SelectableStatic)
+                if widget.display and widget.visible and widget.size.height
+                and all(parent.display for parent in widget.ancestors)]
+
+    def _clamp_to_chat(self, timeline: Widget, x: int, y: int) -> Offset:
+        region = timeline.content_region.intersection(self.region)
+        return Offset(max(region.x, min(region.right - 1, x)),
+                      max(region.y, min(region.bottom - 1, y)))
+
+    @staticmethod
+    def _text_end(widget: SelectableStatic) -> Offset:
+        lines = widget.selection_lines()
+        return Offset(len(lines[-1]), len(lines) - 1) if lines else Offset(0, 0)
+
     def get_widget_and_offset_at(self, x: int, y: int):
+        timeline = getattr(self, "_drag_timeline", None) if self._selecting else None
+        if timeline is not None:
+            x, y = self._clamp_to_chat(timeline, x, y)
         widget, offset = super().get_widget_and_offset_at(x, y)
+        timeline = timeline or self._timeline_for(widget)
+        if timeline is None:
+            return widget, offset
         if isinstance(widget, SelectableStatic):
             offset = widget.character_offset_at(x, y)
-        return widget, offset
+            if offset is not None:
+                return widget, offset
+        # Borders, message gaps and the scrollbar are boundaries between chat
+        # text, rather than invitations to select their whole parent container.
+        previous = None
+        for candidate in self._chat_widgets(timeline):
+            region = candidate.content_region
+            if y < region.y:
+                return ((previous, self._text_end(previous)) if previous is not None
+                        else (candidate, Offset(0, 0)))
+            if y < region.bottom:
+                offset = candidate.character_offset_at(max(region.x, min(region.right - 1, x)), y)
+                return candidate, offset or Offset(0, 0)
+            previous = candidate
+        return (previous, self._text_end(previous)) if previous is not None else (None, None)
+
+    def _select_all_in_widget(self, widget: Widget) -> None:
+        if self._timeline_for(widget) is not None:
+            super()._select_all_in_widget(widget)
+
+    def _check_auto_scroll(self, select_widget, mouse_coordinate, delta_y) -> None:
+        timeline = getattr(self, "_drag_timeline", None)
+        if timeline is not None:
+            pointer = self._clamp_to_chat(timeline, *map(int, mouse_coordinate))
+            super()._check_auto_scroll(timeline, tuple(pointer), delta_y)
+
+    def _update_select(self, _screen=None) -> None:
+        # Scrolling changes which content is under a stationary pointer. Wait
+        # for the new layout before resolving its endpoint; reusing the old
+        # SelectEnd freezes a selection within a long reply.
+        timeline = getattr(self, "_drag_timeline", None)
+        if (self._selecting and timeline is not None and self._select_state is not None
+                and (self._select_state.end is not None or timeline.scroll_offset != self._press_scroll)
+                and not getattr(self, "_selection_refresh_pending", False)):
+            self._selection_refresh_pending = True
+            self.call_after_refresh(self._refresh_drag_endpoint)
+
+    def _refresh_drag_endpoint(self) -> None:
+        self._selection_refresh_pending = False
+        pointer = getattr(self, "_drag_pointer", None)
+        if not self.is_current or not self._selecting or self._select_state is None or pointer is None:
+            return
+        widget, offset = self.get_widget_and_offset_at(*pointer)
+        if widget is not None and offset is not None:
+            self._select_state = self._select_state.update_end(
+                self._clamp_to_chat(self._drag_timeline, *pointer),
+                SelectEnd(widget.parent, widget, offset))
 
     def _inside_selection(self, x: int, y: int) -> bool:
         widget, offset = self.get_widget_and_offset_at(x, y)
@@ -244,29 +332,67 @@ class ConversationScreen(Screen):
     def _forward_event(self, event: events.Event) -> None:
         if not event.is_forwarded:
             if isinstance(event, events.MouseDown) and event.button == 1:
+                self._drag_timeline = None
                 self._selection_press = None
                 if self.selections:
                     if self._inside_selection(event.screen_x, event.screen_y):
                         self._selection_press = (event.screen_offset, self.selections.copy())
                     else:
                         self.clear_selection()
+                self._drag_pointer = event.screen_offset
+                widget, _ = super().get_widget_and_offset_at(event.screen_x, event.screen_y)
+                timeline = self._timeline_for(widget)
+                self._press_scroll = timeline.scroll_offset if timeline is not None else None
+            elif isinstance(event, events.MouseMove) and self._selecting:
+                self._drag_pointer = event.screen_offset
             elif isinstance(event, events.MouseUp) and event.button == 1:
                 press = getattr(self, "_selection_press", None)
                 self._selection_press = None
-                if press is not None and press[0] == event.screen_offset:
+                timeline = getattr(self, "_drag_timeline", None)
+                scrolled = timeline is not None and timeline.scroll_offset != self._press_scroll
+                if self._selecting and self._select_state is not None and self._select_state.end is not None:
+                    self._drag_pointer = event.screen_offset
+                    self._refresh_drag_endpoint()
+                if scrolled:
+                    self._mouse_down_offset = None
+                if press is not None and press[0] == event.screen_offset and not scrolled:
                     self.selections = press[1]
                     self._mouse_down_offset = None
         super()._forward_event(event)
+        if isinstance(event, events.MouseUp) and event.button == 1:
+            self._drag_timeline = None
+            self._drag_pointer = None
 
     def _watch__select_state(self, state: SelectState | None) -> None:
         if state is None:
             self._selecting = False
+            self._drag_timeline = None
             return
-        if (state is not None and state.end is not None
-                and state.is_single_content_widget and state.is_attached_to_dom()):
-            self._selecting = True
+        timeline = self._timeline_for(state.start.content_widget)
+        if timeline is None or not state.is_attached_to_dom():
+            self._select_state = None
+            return
+        self._drag_timeline = timeline
+        self._selecting = True
+        if state.end is None:
+            return
+        if state.is_single_content_widget:
             start, end = state.content_offsets
             self.selections = ({state.start.content_widget: Selection(start, end)}
                                if start != end else {})
             return
-        super()._watch__select_state(state)
+        # Select in transcript order, keeping the anchor when it has scrolled
+        # offscreen and never traversing the sidebar, footer or composer.
+        widgets = self._chat_widgets(timeline)
+        start_widget, end_widget = state.start.content_widget, state.end.content_widget
+        if start_widget not in widgets or end_widget not in widgets:
+            return
+        first, last = widgets.index(start_widget), widgets.index(end_widget)
+        start, end = state.start.content_offset, state.end.content_offset
+        if first > last:
+            first, last = last, first
+            start, end = end, start
+        selections = {widget: SELECT_ALL for widget in widgets[first:last + 1]}
+        selections[widgets[first]] = Selection(start, None)
+        selections[widgets[last]] = Selection(None, end)
+        self.selections = selections
