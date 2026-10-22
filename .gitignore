@@ -5,3 +5,4 @@ __pycache__/
 artifacts/
 .codex-room/
 .DS_Store
+target/

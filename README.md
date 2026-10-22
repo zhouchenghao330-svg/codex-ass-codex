@@ -116,6 +116,8 @@ Codex 回复支持 Markdown：标题、加粗、列表、引用、链接、表�
 
 ## 预览与验证
 
+技术选型实验尚未替换正式入口。运行 `uv run python scripts/terminal_lab.py --lines 10000`，可在同一个终端中从菜单选择 Rust Inline、Rust Fullscreen、当前 Textual、关闭鼠标捕获的 Textual；四组使用相同的模拟数据，不调用模型、不读写房间状态。操作与已知限制见 [实验说明](experiments/terminal-lab/README.md)。此前的 Python Inline 小样仍可用 `uv run scripts/native_terminal_probe.py` 启动。调研与功能迁移边界见 [终端呈现](docs/native-terminal-presentation.md)，未完成的子代理工作见 [功能交接](docs/next-version-handoff.md)。
+
 ```sh
 uv run python scripts/preview.py
 uv run python scripts/preview_tools.py
