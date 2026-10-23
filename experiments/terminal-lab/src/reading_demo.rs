@@ -30,13 +30,21 @@ use std::{
 };
 use unicode_width::UnicodeWidthStr;
 
-const MODES: [&str; 5] = ["原样", "行阅读尺", "段落聚焦", "段落＋行", "窄栏＋聚焦"];
-const DESCRIPTIONS: [&str; 5] = [
+const MODES: [&str; 6] = [
+    "原样",
+    "行阅读尺",
+    "段落聚焦",
+    "段落＋行",
+    "窄栏＋聚焦",
+    "仅窄栏居中",
+];
+const DESCRIPTIONS: [&str; 6] = [
     "对照组：保持普通显示；切换方案时沿用同一阅读位置。",
     "只突出当前行与相邻一行，适合逐行跟读。",
     "突出整段；列表按一条，表格按数据行，代码按代码行。",
     "整段保持清晰，当前行加浅色提示；长段收敛到附近五行。",
     "与方案 3 相同，正文最多 92 列并居中，观察短行是否更舒服。",
+    "只把正文限制在 92 列并居中；保持原有配色，不加聚焦、压暗或行提示。",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -184,7 +192,7 @@ impl Demo {
         Some((start + anchor.offset).min(end - 1))
     }
     fn layout(&mut self, area: Rect) {
-        let width = if self.mode == 4 {
+        let width = if matches!(self.mode, 4 | 5) {
             area.width.saturating_sub(4).min(94)
         } else {
             area.width.saturating_sub(2)
@@ -304,7 +312,7 @@ impl Demo {
     fn active_range(&self) -> Option<(usize, usize)> {
         let focus = self.focus?;
         let row = self.rows.get(focus)?;
-        if self.mode == 0 {
+        if matches!(self.mode, 0 | 5) {
             return None;
         }
         if self.mode == 1 {
@@ -321,8 +329,8 @@ impl Demo {
         let row = &self.rows[index];
         let active = self.active_range();
         let focused = active.is_some_and(|(a, b)| index >= a && index < b);
-        let ruler = self.mode == 1 || self.mode >= 3;
-        let center = self.focus == Some(index) && self.mode != 0;
+        let ruler = matches!(self.mode, 1 | 3 | 4);
+        let center = self.focus == Some(index) && matches!(self.mode, 1..=4);
         let tint = if focused && (!self.dim || (center && ruler)) {
             Some(if center && ruler {
                 Color::Rgb(48, 56, 49)
@@ -395,7 +403,7 @@ impl Demo {
         for index in self.scroll..(self.scroll + self.body.height as usize).min(self.rows.len()) {
             let y = self.body.y + (index - self.scroll) as u16;
             let row = &self.rows[index];
-            let marker = if self.focus == Some(index) && self.mode != 0 {
+            let marker = if self.focus == Some(index) && matches!(self.mode, 1..=4) {
                 if self.locked { "◆ " } else { "› " }
             } else if row.kind == Kind::Role {
                 "▎ "
@@ -421,7 +429,9 @@ impl Demo {
         let state = format!(
             " {} · {} · {} · {}/{} 行{}",
             MODES[self.mode],
-            if self.dim {
+            if matches!(self.mode, 0 | 5) {
+                "普通亮度 · 无阅读聚焦".into()
+            } else if self.dim {
                 format!("其他文字压暗 {}%", self.strength)
             } else {
                 "只加浅底色".into()
@@ -452,7 +462,7 @@ impl Demo {
         );
         frame.render_widget(
             Line::styled(
-                " 0–4 切方案 · D 明暗/浅底 · +/- 明暗强度 · J/K 上下段 · F2 模拟流式",
+                " 0–5 切方案 · D 明暗/浅底 · +/- 明暗强度 · J/K 上下段 · F2 模拟流式",
                 MUTED,
             ),
             Rect::new(area.x, area.bottom().saturating_sub(2), area.width, 1),
@@ -594,7 +604,7 @@ impl Demo {
                 self.notice.clear();
                 match key.code {
                     KeyCode::Char('q') => self.quit = true,
-                    KeyCode::Char(c @ '0'..='4') => self.set_mode((c as u8 - b'0') as usize),
+                    KeyCode::Char(c @ '0'..='5') => self.set_mode((c as u8 - b'0') as usize),
                     KeyCode::Char('d' | 'D') => self.dim = !self.dim,
                     KeyCode::Char('+' | '=') => self.strength = (self.strength + 5).min(65),
                     KeyCode::Char('-') => self.strength = self.strength.saturating_sub(5).max(10),
@@ -805,7 +815,7 @@ fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
-            "Codex Room ADHD reading demo\n\n0 原样 · 1 行阅读尺 · 2 段落聚焦 · 3 段落＋行 · 4 窄栏聚焦\nD 切换明暗/浅底 · +/- 强度 · 空格锁定 · J/K 上下段\nF2 模拟流式 · 鼠标拖选 · Cmd+C 复制 · Q/Ctrl+Q 退出\n\n不调用 Codex，不读取或写入房间。"
+            "Codex Room ADHD reading demo\n\n0 原样 · 1 行阅读尺 · 2 段落聚焦 · 3 段落＋行 · 4 窄栏聚焦 · 5 仅窄栏居中\nD 切换明暗/浅底 · +/- 强度 · 空格锁定 · J/K 上下段\nF2 模拟流式 · 鼠标拖选 · Cmd+C 复制 · Q/Ctrl+Q 退出\n\n不调用 Codex，不读取或写入房间。"
         );
         return;
     }
@@ -813,7 +823,7 @@ fn main() {
         .windows(2)
         .find(|p| p[0] == "--mode")
         .and_then(|p| p[1].parse::<usize>().ok())
-        .filter(|&m| m < 5)
+        .filter(|&m| m < MODES.len())
         .unwrap_or(3);
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         eprintln!("请在交互式终端运行阅读 Demo。");
@@ -857,6 +867,20 @@ mod tests {
         demo.layout(Rect::new(0, 0, 160, 38));
         assert_eq!(demo.text.width, 92);
         assert_eq!(demo.rows[demo.focus.unwrap()].group, group);
+        demo.set_mode(5);
+        demo.layout(Rect::new(0, 0, 160, 38));
+        assert_eq!(demo.text.width, 92);
+        assert_eq!(demo.active_range(), None);
+        for dim in [false, true] {
+            demo.dim = dim;
+            for (index, row) in demo.rows.iter().enumerate() {
+                assert_eq!(
+                    demo.line(index),
+                    row.row.line,
+                    "pure centering must retain original styles"
+                );
+            }
+        }
         demo.set_mode(0);
         assert_eq!(demo.active_range(), None);
     }

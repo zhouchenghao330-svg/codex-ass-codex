@@ -117,7 +117,7 @@ Git 克隆不会带上被忽略的聊天状态、虚拟环境和编译缓存，R
 
 界面与通信边界、缓存和当前限制见 [Rust 迁移说明](docs/rust-fullscreen.md)；旧界面操作见 [Textual 旧版说明](docs/textual-legacy.md)。
 
-阅读辅助的独立对比 Demo：`uv run python scripts/reading_lab.py`，用 0–4 切换原样、行阅读尺、段落聚焦、段落加行提示、窄栏聚焦；支持两种明暗风格、锁定、选字复制及模拟流式输出，不连接 Codex、不读写房间。操作与实验边界见 [阅读 Demo](docs/reading-demo.md)，正式 `/adhd` 尚未接入。
+阅读辅助的独立对比 Demo：`uv run python scripts/reading_lab.py`，用 0–5 切换原样、行阅读尺、段落聚焦、段落加行提示、窄栏聚焦、仅窄栏居中；支持两种明暗风格、锁定、选字复制及模拟流式输出，不连接 Codex、不读写房间。操作与实验边界见 [阅读 Demo](docs/reading-demo.md)，正式 `/adhd` 尚未接入。
 
 ```sh
 cargo test --locked --manifest-path terminal-ui/Cargo.toml
