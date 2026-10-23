@@ -333,6 +333,75 @@ fn wrapped_prompt_selection_preserves_original_newlines_and_paste_payload() {
     assert!(!q.to_string().contains("后缀"));
 }
 #[test]
+fn selecting_prose_keeps_live_working_phase_and_elapsed_time() {
+    use ratatui::{Terminal, backend::TestBackend};
+    use unicode_width::UnicodeWidthStr;
+
+    let mut answer = entry("answer", "A", "需要选中的正文");
+    answer["state"] = json!("working");
+    answer["started_epoch"] = json!(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            - 28.
+    );
+    let mut app = app(vec![answer.clone()]);
+    app.members[0]["busy"] = json!(true);
+    app.members[0]["phase"] = json!("正在思考：分析分支");
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    let mut working_line = |app: &mut App| {
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..24)
+            .find_map(|y| {
+                let mut text = String::new();
+                let mut x = 0;
+                while x < 100 {
+                    let symbol = buffer[(x, y)].symbol();
+                    text.push_str(symbol);
+                    x += symbol.width().max(1) as u16;
+                }
+                text.contains("Working").then_some(text)
+            })
+            .unwrap()
+    };
+    assert!(working_line(&mut app).contains("Working · 正在思考：分析分支 ·"));
+    let row = app
+        .timeline
+        .rows
+        .iter()
+        .position(|r| r.text == "需要选中的正文")
+        .unwrap();
+    select_rows(&mut app, row, 0, row, "需要选中的正文".len());
+    let line = working_line(&mut app);
+    assert!(line.contains("Working · 正在思考：分析分支 ·"), "{line}");
+    assert!(line.trim_end().ends_with('s'));
+    answer["body"] = json!("需要选中的正文\n\n随后生成的新输出");
+    app.on_service(json!({"type":"patch","entries":[answer]}));
+    let mut members = app.members.clone();
+    members[0]["phase"] = json!("正在执行命令…");
+    app.on_service(
+        json!({"type":"members","agents":members,"selected":"A","show_all":false,"connected":true}),
+    );
+    assert!(working_line(&mut app).contains("Working · 正在执行命令… ·"));
+    assert_eq!(app.selected_text(), "需要选中的正文");
+    assert!(
+        !app.timeline
+            .rows
+            .iter()
+            .any(|r| r.text.contains("随后生成的新输出"))
+    );
+    app.clear_selection();
+    working_line(&mut app);
+    assert!(
+        app.timeline
+            .rows
+            .iter()
+            .any(|r| r.text.contains("随后生成的新输出"))
+    );
+}
+#[test]
 fn stream_updates_do_not_move_drag_anchor_or_reparse_selected_history() {
     let mut app = app(vec![entry("a", "A", "old text")]);
     let at = app

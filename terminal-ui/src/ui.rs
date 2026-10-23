@@ -122,7 +122,7 @@ impl App {
                 Line::styled(rail, color(string(member, "color"))),
                 Rect::new(self.body.x, y, 2.min(self.body.width), 1),
             );
-            let mut line = if row.working {
+            let line = if row.working {
                 let elapsed = now - e["started_epoch"].as_f64().unwrap_or(now);
                 Line::styled(
                     format!(
@@ -132,12 +132,11 @@ impl App {
                     ),
                     MUTED,
                 )
+            } else if let Some(selection) = self.selection {
+                selection.highlight(row_index, row)
             } else {
                 row.line.clone()
             };
-            if let Some(selection) = self.selection {
-                line = selection.highlight(row_index, row);
-            }
             let bg = if sender == "you" {
                 Color::Rgb(42, 46, 42)
             } else {

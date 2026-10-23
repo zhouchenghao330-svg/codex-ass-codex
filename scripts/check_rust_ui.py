@@ -454,6 +454,27 @@ class RustUITests(unittest.TestCase):
         self.assertEqual(quoted[0]["target"],"新笔记")
         self.assertEqual(state["drafts"]["A"]["prompt"],"留在来源的草稿")
 
+    def test_text_selection_preserves_live_working_phase_and_timer(self):
+        self.start(columns=110,rows=34)
+        self.command("/add A")
+        self.command("thinking-slow")
+        self.session.wait(lambda:"Working · 正在思考：检查项目结构 ·" in self.session.visible)
+        def clock():
+            line=next((line for line in self.session.visible.splitlines() if "Working · 正在思考：检查项目结构 ·" in line),"")
+            return line.rsplit("·",1)[-1].strip() if line else ""
+        before=clock()
+        row=self.row("thinking-slow")
+        line=self.session.visible.splitlines()[row]
+        x=wcswidth(line[:line.index("thinking-slow")])
+        self.session.send(f"\x1b[<0;{x+1};{row+1}M\x1b[<32;{x+9};{row+1}M\x1b[<0;{x+9};{row+1}m".encode())
+        self.session.wait(lambda:any(cell.bg=="415a74" for cells in self.session.screen.buffer.values() for cell in cells.values()))
+        self.session.wait(lambda:bool(clock()) and clock()!=before)
+        self.assertTrue(any(cell.bg=="415a74" for cells in self.session.screen.buffer.values() for cell in cells.values()))
+        self.session.send(b"\x1b")
+        self.session.wait(lambda:not any(cell.bg=="415a74" for cells in self.session.screen.buffer.values() for cell in cells.values()))
+        self.assertIn("Working · 正在思考：检查项目结构 ·",self.session.visible)
+        self.finish()
+
     def test_large_history_drag_keeps_anchor_and_background_stream(self):
         room=self.cwd/".codex-room";room.mkdir()
         entries=[{"id":f"m{i}","sender":"A","body":f"ROW_{i:05d} "+"中文选择"*8,"state":"done"} for i in range(10000)]
