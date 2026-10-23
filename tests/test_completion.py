@@ -42,6 +42,7 @@ class CompletionTests(unittest.TestCase):
         engine = CompletionEngine()
         agents = {"a": Agent("a", "a", "purple"), "b": Agent("b", "b", "mint", model="custom-model")}
         cases = {
+            "/adh": ["/adhd"], "/adhd ": ["on", "off"], "/adhd of": ["off"],
             "/mem": ["/members"], "@a /mod": ["/model"], "/permisson": ["/permissions"],
             "/focus ": ["a", "b", "all"], "/focus al": ["all"], "@a /stop @": ["@a", "@b"],
             "/d": ["/del"], "/del ": ["a", "b"], "@a /del @": ["@a", "@b"],

@@ -41,13 +41,23 @@ impl App {
             main.width,
             status_height,
         );
+        let body_width = if self.reading_centered {
+            main.width.min(95)
+        } else {
+            main.width
+        };
         self.body = Rect::new(
-            main.x,
+            main.x + (main.width - body_width) / 2,
             main.y + 1,
-            main.width,
+            body_width,
             status.y.saturating_sub(main.y + 1),
         );
         let width = self.body.width.saturating_sub(3).max(1) as usize;
+        let anchor = if self.timeline.width != width && !self.follow && !self.pending_bottom {
+            self.timeline.anchor(self.scroll)
+        } else {
+            None
+        };
         if self.timeline.width != width {
             self.clear_selection();
             self.timeline.width = width;
@@ -55,6 +65,11 @@ impl App {
             self.rebuild = true;
         }
         self.rebuild();
+        if let Some(anchor) = anchor {
+            if let Some(row) = self.timeline.locate(&anchor) {
+                self.scroll = row;
+            }
+        }
         if self.pending_bottom && self.selection.is_none() && self.press.is_none() {
             self.scroll = self.maximum();
             self.follow = true;
@@ -87,7 +102,14 @@ impl App {
             .count();
         f.render_widget(
             Line::styled(
-                format!(" Codex Room · Rust · {view} · {mode} · {busy} 工作中"),
+                format!(
+                    " Codex Room · Rust · {view} · {mode} · {busy} 工作中{}",
+                    if self.reading_centered {
+                        " · 居中阅读"
+                    } else {
+                        ""
+                    }
+                ),
                 MUTED,
             ),
             Rect::new(main.x, main.y, main.width, 1),

@@ -1,6 +1,6 @@
 # /adhd 阅读交互 Demo
 
-独立 Rust 终端实验，复用正式界面的 Markdown、宽字符绘制、表格复制和选区渲染。不调用 Codex，不启动 Python 会话服务，不读写 `.codex-room`，可以与正在运行的 Room 并存。正式 `/adhd` 命令尚未接入。
+独立 Rust 终端实验，复用正式界面的 Markdown、宽字符绘制、表格复制和选区渲染。不调用 Codex，不启动 Python 会话服务，不读写 `.codex-room`，可以与正在运行的 Room 并存。正式 Room 已通过 `/adhd` 接入方案 5：仅窄栏居中，保留原有配色；`/adhd on`、`/adhd off` 明确开启或关闭，按房间保存。其余聚焦效果仍仅供实验。
 
 ```sh
 uv run python scripts/reading_lab.py

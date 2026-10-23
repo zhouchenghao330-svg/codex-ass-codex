@@ -23,6 +23,106 @@ fn select_rows(app: &mut App, first: usize, a: usize, last: usize, b: usize) {
         head: Point { row: last, byte: b },
     });
 }
+
+#[test]
+fn centered_reading_preserves_position_and_original_colors() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let text = (0..40)
+        .map(|n| format!("READ_{n:02} {}", "米白色正文与正常阅读位置。".repeat(18)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut app = app(vec![entry("history", "A", &text)]);
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let top = app
+        .timeline
+        .rows
+        .iter()
+        .position(|r| r.text.starts_with("READ_15"))
+        .unwrap()
+        + 1;
+    let prefix = app.timeline.rows[top]
+        .text
+        .chars()
+        .take(16)
+        .collect::<String>();
+    app.scroll = top;
+    app.follow = false;
+    app.pending_bottom = false;
+    app.on_service(json!({"type":"action","action":"reading_centered","enabled":true}));
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_eq!(app.body.width, 95);
+    assert_eq!(app.body.x, (160 - 95) / 2);
+    assert_eq!(app.timeline.width, 92);
+    assert_eq!(app.input_area.x, 0);
+    assert_eq!(app.input_area.width, 160);
+    assert!(!app.follow);
+    let visible = app
+        .timeline
+        .rows
+        .iter()
+        .skip(app.scroll)
+        .take(4)
+        .map(|r| r.text.as_str())
+        .collect::<String>();
+    assert!(
+        visible.contains(&prefix),
+        "reading position moved: {visible}"
+    );
+    let cell = &terminal.backend().buffer()[(app.body.x + 2, app.body.y)];
+    assert_eq!(cell.fg, FG);
+    assert_eq!(cell.bg, BG);
+    let point = app.point(app.body.x + 2, app.body.y).unwrap();
+    assert_eq!(point.row, app.scroll);
+    assert_eq!(point.byte, 0);
+    app.sidebar = true;
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_eq!(app.body.x, 24 + (160 - 24 - 95) / 2);
+    assert_eq!(app.body.width, 95);
+    assert_eq!(app.input_area.x, 24);
+    assert_eq!(app.input_area.width, 136);
+    app.on_service(json!({"type":"action","action":"reading_centered","enabled":false}));
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_eq!(app.body.x, 24);
+    assert_eq!(app.body.width, 136);
+    assert!(!app.follow);
+}
+
+#[test]
+fn centered_reading_restores_and_shrinks_to_available_width() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut app = app(vec![entry("reply", "A", "阅读颜色测试")]);
+    app.on_service(
+        json!({"type":"init","cwd":"/example","entries":app.entries,"reading_centered":true}),
+    );
+    for (width, sidebar) in [
+        (160, false),
+        (120, true),
+        (80, false),
+        (80, true),
+        (50, false),
+    ] {
+        app.sidebar = sidebar;
+        let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let available = width - if sidebar && width >= 65 { 24 } else { 0 };
+        assert_eq!(app.body.width, available.min(95));
+        assert_eq!(
+            app.timeline.width,
+            available.min(95).saturating_sub(3) as usize
+        );
+        let row = app
+            .timeline
+            .rows
+            .iter()
+            .position(|r| r.text == "阅读颜色测试")
+            .unwrap();
+        let cell =
+            &terminal.backend().buffer()[(app.body.x + 2, app.body.y + (row - app.scroll) as u16)];
+        assert_eq!(cell.fg, FG);
+        assert_eq!(cell.bg, BG);
+    }
+}
 #[test]
 fn markdown_tables_fit_chat_columns_after_sidebar_and_window_resize() {
     use ratatui::{Terminal, backend::TestBackend, style::Modifier};
@@ -37,17 +137,26 @@ fn markdown_tables_fit_chat_columns_after_sidebar_and_window_resize() {
     peer["communication"] = json!({"content_available":true,"target_label":"B"});
     let mut app = app(vec![legacy, reply, peer]);
 
-    for (columns, sidebar) in [
-        (160, false),
-        (160, true),
-        (80, true),
-        (80, false),
-        (160, false),
+    for (columns, sidebar, centered) in [
+        (160, false, false),
+        (160, true, false),
+        (80, true, false),
+        (80, false, false),
+        (160, false, true),
+        (160, true, true),
+        (80, true, true),
+        (160, false, false),
     ] {
         app.sidebar = sidebar;
+        app.reading_centered = centered;
         let mut terminal = Terminal::new(TestBackend::new(columns, 50)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        let width = (columns - if sidebar { 24 } else { 0 } - 3) as usize;
+        let available = columns - if sidebar { 24 } else { 0 };
+        let width = (if centered {
+            available.min(95)
+        } else {
+            available
+        } - 3) as usize;
         assert_eq!(app.timeline.width, width);
         for message in 0..3 {
             let rows = app

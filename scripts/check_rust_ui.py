@@ -188,6 +188,69 @@ class RustUITests(unittest.TestCase):
         self.session.send(b"\x1b")
         self.finish()
 
+    def test_centered_reading_toggle_copy_fold_scroll_and_restart(self):
+        helpers = self.cwd/"copy-helpers"
+        helpers.mkdir()
+        captured = self.cwd/"copied.txt"
+        captured.write_text("")
+        for name in ("pbcopy", "wl-copy", "xclip", "clip.exe"):
+            helper = helpers/name
+            helper.write_text('#!/bin/sh\n/bin/cat > "$CODEX_ROOM_COPY_CAPTURE"\n')
+            helper.chmod(0o755)
+        os.environ["PATH"] = str(helpers) + os.pathsep + os.environ["PATH"]
+        os.environ["CODEX_ROOM_COPY_CAPTURE"] = str(captured)
+        directory = self.cwd/".codex-room"
+        directory.mkdir()
+        entries = [{"id":str(n), "sender":"A", "body":f"HISTORY_{n:02d}\n\n" + "阅读位置保持测试。"*20,
+                    "state":"done"} for n in range(25)]
+        entries.append({"id":"latest", "sender":"A", "body":"CENTER_SELECT\n\nFOLD_DETAIL", "state":"done"})
+        (directory/"state.json").write_text(json.dumps({"version":2,"agents":[{
+            "name":"A","label":"A","color":"#afb4ff","cwd":str(self.cwd)}],
+            "entries":entries,"selected":"A","show_all":False}))
+        self.start(columns=150, rows=40)
+        self.session.wait(lambda:"CENTER_SELECT" in self.session.visible)
+
+        def position(text):
+            y = self.row(text)
+            line = self.session.visible.splitlines()[y]
+            return wcswidth(line[:line.index(text)]), y
+
+        original_x, _ = position("CENTER_SELECT")
+        self.command("/adhd", finish="居中阅读已开启")
+        x, y = position("CENTER_SELECT")
+        self.assertEqual(x-original_x, 27)
+        end = x + len("CENTER_SELECT")
+        self.session.send(f"\x1b[<0;{x+1};{y+1}M\x1b[<32;{end+1};{y+1}M\x1b[<0;{end+1};{y+1}m\x1b[99;9u".encode())
+        self.session.wait(lambda:captured.read_text() == "CENTER_SELECT")
+        self.click(1, y)  # Centered margin clears the selection, not the card.
+        header_y = next(i for i,line in enumerate(self.session.visible.splitlines()) if "▾ A" in line and i < y and i > y-4)
+        self.click(x, header_y)
+        self.session.wait(lambda:"FOLD_DETAIL" not in self.session.visible)
+        collapsed_y = self.row("▸ A")
+        self.click(x, collapsed_y)
+        self.session.wait(lambda:"▾ A" in self.session.visible.splitlines()[collapsed_y])
+        self.session.send(b"\x1b[1;5F")  # Expanded tail can extend below the current viewport.
+        self.session.wait(lambda:"FOLD_DETAIL" in self.session.visible)
+        self.session.send(b"\x1b[<64;70;12M" * 50)
+        self.session.wait(lambda:"CENTER_SELECT" not in self.session.visible)
+        self.command("/adhd off", finish="居中阅读已关闭")
+        self.assertNotIn("CENTER_SELECT", self.session.visible)
+        self.command("/adhd on", finish="居中阅读已开启")
+        self.assertNotIn("CENTER_SELECT", self.session.visible)
+        self.finish()
+        saved = json.loads((directory/"state.json").read_text())
+        self.assertTrue(saved["reading_centered"])
+        self.assertEqual(len(saved["entries"]), len(entries))
+        self.assertIsNone(saved["agents"][0]["thread_id"])
+        self.session.close(); self.session = None
+        self.start(columns=150, rows=40)
+        self.session.wait(lambda:"CENTER_SELECT" in self.session.visible)
+        self.assertEqual(position("CENTER_SELECT")[0], x)
+        self.command("/adhd off", finish="居中阅读已关闭")
+        self.assertEqual(position("CENTER_SELECT")[0], original_x)
+        self.finish()
+        self.assertFalse(json.loads((directory/"state.json").read_text())["reading_centered"])
+
     def test_markdown_table_columns_reflow_with_sidebar_and_terminal_width(self):
         source = (ROOT/"tests/fixtures/markdown_table.md").read_text()
         directory = self.cwd/".codex-room"

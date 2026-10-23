@@ -38,6 +38,20 @@ pub struct Timeline {
     pub details: HashSet<String>,
     pub all_details: HashSet<String>,
 }
+// Reflow by text position within a message block, rather than retaining an old
+// screen-row number when centered reading changes the wrap width.
+pub struct ScrollAnchor {
+    message: usize,
+    blocks: Vec<String>,
+    action: String,
+    occurrence: usize,
+    offset: usize,
+}
+impl ScrollAnchor {
+    fn matches(&self, row: &Row) -> bool {
+        self.message == row.message && self.blocks == row.blocks && self.action == row.action
+    }
+}
 impl Timeline {
     pub fn new(width: usize) -> Self {
         Self {
@@ -47,6 +61,53 @@ impl Timeline {
     }
     pub fn invalidate(&mut self) {
         self.cache.clear();
+    }
+    pub fn anchor(&self, index: usize) -> Option<ScrollAnchor> {
+        let row = self.rows.get(index)?;
+        let mut anchor = ScrollAnchor {
+            message: row.message,
+            blocks: row.blocks.clone(),
+            action: row.action.clone(),
+            occurrence: 0,
+            offset: 0,
+        };
+        let start = self.rows[..index]
+            .iter()
+            .rposition(|r| !anchor.matches(r))
+            .map_or(0, |n| n + 1);
+        anchor.offset = self.rows[start..index].iter().map(|r| r.text.len()).sum();
+        anchor.occurrence = self.rows[..start]
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| anchor.matches(r) && (*i == 0 || !anchor.matches(&self.rows[i - 1])))
+            .count();
+        Some(anchor)
+    }
+    pub fn locate(&self, anchor: &ScrollAnchor) -> Option<usize> {
+        let mut seen = 0;
+        let mut index = 0;
+        while index < self.rows.len() {
+            if !anchor.matches(&self.rows[index]) {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < self.rows.len() && anchor.matches(&self.rows[index]) {
+                index += 1;
+            }
+            if seen == anchor.occurrence {
+                let mut offset = 0;
+                for n in start..index {
+                    offset += self.rows[n].text.len();
+                    if offset > anchor.offset {
+                        return Some(n);
+                    }
+                }
+                return Some(index - 1);
+            }
+            seen += 1;
+        }
+        None
     }
     pub fn rebuild(
         &mut self,

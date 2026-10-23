@@ -1329,6 +1329,9 @@ class CodexRoom(App):
             self.action_toggle_sidebar()
         elif command == "/model":
             return await self.configure_model(target, parts[1:])
+        elif command == "/adhd":
+            self.notify("居中阅读请使用默认 Rust 界面（不加 --legacy-ui）。", severity="warning")
+            return False
         elif command == "/fast":
             if not self.client or not self.connected:
                 self.notify("请先连接 Codex，再切换 Fast 模式", severity="warning")

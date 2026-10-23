@@ -48,6 +48,30 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["agents"][0]["thread_id"], tid)
         self.assertEqual(state["version"], 2)
 
+    async def test_centered_reading_is_a_room_preference_not_an_agent_request(self):
+        entries = list(self.service.entries)
+        identities = {name: member.thread_id for name, member in self.service.agents.items()}
+        self.assertFalse(self.service.reading_centered)
+        for command, expected in (("/adhd", True), ("/adhd", False), ("/ADHD ON", True),
+                                  ("/adhd on", True), ("/adhd off", False), ("/adhd on", True)):
+            await self.service.submit(Prompt(command))
+            self.assertEqual(self.service.reading_centered, expected)
+            self.assertEqual(self.service.entries, entries)
+            self.assertEqual({name: member.thread_id for name, member in self.service.agents.items()}, identities)
+            self.assertIn({"type":"action","action":"reading_centered","enabled":expected}, self.output)
+        for command in ("/adhd maybe", "/adhd on off"):
+            with self.assertRaisesRegex(ValueError, "/adhd"):
+                await self.service.submit(Prompt(command))
+            self.assertTrue(self.service.reading_centered)
+        self.service.save()
+        await self.service.close()
+        self.output.clear()
+        self.service = Service(self.cwd, command=[sys.executable, str(FAKE)], emit=self.output.append)
+        await self.service.start()
+        self.assertTrue(self.service.reading_centered)
+        init = next(event for event in self.output if event["type"] == "init")
+        self.assertTrue(init["reading_centered"])
+
     async def test_multi_recipient_is_validated_before_any_dispatch(self):
         await self.service.command("/add 笔记")
         with self.assertRaises(ValueError):

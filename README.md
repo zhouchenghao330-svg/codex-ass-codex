@@ -34,6 +34,7 @@ Windows 可双击 `start.bat`，步骤见 [Windows 说明](WINDOWS.md)。开发�
 /rename 开发 环境排查
 /focus 笔记
 /focus all
+/adhd
 /model
 /fast
 @环境排查 /fast off
@@ -59,6 +60,7 @@ Windows 可双击 `start.bat`，步骤见 [Windows 说明](WINDOWS.md)。开发�
 
 ## 阅读、输入与工具
 
+- `/adhd` 切换窄栏居中阅读，也可用 `/adhd on`、`/adhd off`。聊天正文最多 92 列，窗口较窄时自动收缩；保留原有配色、输入框和成员栏。默认关闭，按房间保存，重启恢复；切换时尽量保持当前阅读位置，不向 Codex 发送消息。此功能使用默认 Rust 界面。
 - 直接打字即可输入。Enter 发送，Ctrl+J 换行；Shift+Enter 取决于终端是否单独上报。输入自动折行，最多显示 8 行；↑/↓ 在空输入框中翻历史，在多行草稿中移动光标。
 - `/mem` + Tab 补成 `/members`；@、命令、成员、模型、推理强度、权限、目录和颜色均支持补全。↑/↓、Tab/Enter 或鼠标选择候选，选中只填入文本，再按 Enter 执行。普通路径不会误认为命令。
 - 一次粘贴达到 1000 字符或 8 行，显示 `[Pasted Content N chars]`；原文完整发送。本地图片路径显示 `[Image #1]`，以 localImage 发送。左右跨过整个块，Backspace/Delete 整块删除，Ctrl+Z/Y 撤销/重做，Alt+Enter 展开长文本；选中长粘贴块复制时还原完整原文。图片文件需仍然存在；终端需把图片粘贴/拖入转换为本地路径。
@@ -117,7 +119,7 @@ Git 克隆不会带上被忽略的聊天状态、虚拟环境和编译缓存，R
 
 界面与通信边界、缓存和当前限制见 [Rust 迁移说明](docs/rust-fullscreen.md)；旧界面操作见 [Textual 旧版说明](docs/textual-legacy.md)。
 
-阅读辅助的独立对比 Demo：`uv run python scripts/reading_lab.py`，用 0–5 切换原样、行阅读尺、段落聚焦、段落加行提示、窄栏聚焦、仅窄栏居中；支持两种明暗风格、锁定、选字复制及模拟流式输出，不连接 Codex、不读写房间。操作与实验边界见 [阅读 Demo](docs/reading-demo.md)，正式 `/adhd` 尚未接入。
+阅读辅助的独立对比 Demo：`uv run python scripts/reading_lab.py`，用 0–5 切换原样、行阅读尺、段落聚焦、段落加行提示、窄栏聚焦、仅窄栏居中；支持两种明暗风格、锁定、选字复制及模拟流式输出，不连接 Codex、不读写房间。操作与实验边界见 [阅读 Demo](docs/reading-demo.md)。正式 `/adhd` 采用方案 5，仅窄栏居中。
 
 ```sh
 cargo test --locked --manifest-path terminal-ui/Cargo.toml

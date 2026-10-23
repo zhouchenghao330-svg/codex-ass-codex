@@ -21,6 +21,7 @@ COMMANDS = (
     ("/rename", "重命名成员，保留会话 · [原名] 新名"),
     ("/model", "选择模型 · [模型] [推理强度]"),
     ("/fast", "切换当前成员的 Fast 模式 · [on / off]"),
+    ("/adhd", "切换正文窄栏居中 · [on / off]"),
     ("/permissions", "选择权限 · [full / workspace / read-only]"),
     ("/members", "展开 / 收起成员列表"),
     ("/help", "查看帮助"),
@@ -182,6 +183,10 @@ class CompletionEngine:
                                   or agent.label.casefold().startswith(query.lstrip("@").casefold())]
                     if command == "/focus" and "all".startswith(query.casefold()):
                         candidates.append(Candidate("all", "聊天室 · 显示全部消息"))
+                elif command == "/adhd" and not arguments:
+                    kind = "reading"
+                    candidates = [Candidate(value, detail) for value, detail in
+                                  (("on", "开启窄栏居中"), ("off", "关闭窄栏居中")) if value.startswith(query.lower())]
                 elif command == "/permissions" and not arguments:
                     kind = "permission"
                     candidates = [Candidate(value, detail) for value, detail in PERMISSIONS if value.startswith(query.lower())]

@@ -95,6 +95,7 @@ class Service:
         if self.selected not in self.agents:
             self.selected = next(iter(self.agents), "")
         self.show_all = self.saved.get("show_all", True)
+        self.reading_centered = self.saved.get("reading_centered") is True
         self.input_history = self.saved.get("input_history", [])
         self.drafts = self.saved.get("drafts", {})
         self.client = None
@@ -155,6 +156,7 @@ class Service:
             self.saved.update(version=2, agents=[{**old_members.get(a.name, {}), **a.config()} for a in self.agents.values()],
                               entries=[{**old_entries.get(e.id, {}), **asdict(e)} for e in self.entries], selected=self.selected,
                               show_all=self.show_all, input_history=self.input_history, drafts=self.drafts,
+                              reading_centered=self.reading_centered,
                               ignored_native_threads=sorted(self.ignored_native_threads))
             self.saved.update(self.peers.saved_state())
             self.store.save(self.saved)
@@ -162,7 +164,8 @@ class Service:
 
     async def start(self):
         self.emit({"type": "init", "entries": [wire_entry(e) for e in self.entries],
-                   "input_history": self.input_history, "drafts": self.drafts, "cwd": str(self.cwd)})
+                   "input_history": self.input_history, "drafts": self.drafts, "cwd": str(self.cwd),
+                   "reading_centered": self.reading_centered})
         self.members()
         if not self.demo:
             await self.connect()
@@ -295,6 +298,13 @@ class Service:
                     await self.stop(name)
                 else:
                     await self.delete_member(name)
+        elif verb == "/adhd":
+            args = value.split()[1:]
+            if len(args) > 1 or (args and args[0].casefold() not in {"on", "off"}):
+                raise ValueError("用 /adhd 切换居中阅读，或 /adhd on、/adhd off")
+            self.reading_centered = args[0].casefold() == "on" if args else not self.reading_centered
+            self.emit({"type": "action", "action": "reading_centered", "enabled": self.reading_centered})
+            self.notify(f"居中阅读已{'开启 · 正文最多 92 列' if self.reading_centered else '关闭'}")
         elif verb == "/fast":
             if target not in self.agents:
                 raise ValueError("请先选择成员或用 @名字 /fast")
