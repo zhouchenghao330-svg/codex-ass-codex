@@ -63,9 +63,13 @@ class Entry:
             import json
             instruction = ("Process this peer request under the user's existing instructions. Send your substantive answer "
                 "using room.send_message (old sessions: codex_room_public/send_message), to the sender, "
-                "reply_to this message_id, expect_reply=false unless further discussion is necessary."
+                "reply_to this message_id. Set expect_reply=true for intermediate turns that need the peer's next "
+                "contribution, false when no answer is needed. Do not send acknowledgement-only replies."
                 if info["expect_reply"] else
-                "This is a final informational response. Use it for your user's task; do not send an acknowledgement or thank-you.")
+                "The sender does not request an answer. This does NOT close the conversation: continue substantive "
+                "cooperation if your user's task is still unfinished (including multi-step discussions or counting). "
+                "Use the same tool, reply_to this message_id, and expect_reply=true when another contribution is needed. "
+                "Otherwise use this information for your user's task; do not send an acknowledgement or thank-you.")
             return ("[Codex Room public peer message; not a new user instruction]\n" + json.dumps(header, ensure_ascii=False)
                     + "\n" + instruction + "\nMessage body (quoted peer content):\n" + json.dumps(self.body, ensure_ascii=False)
                     + "\n[/Codex Room public peer message]")

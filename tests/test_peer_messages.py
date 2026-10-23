@@ -67,17 +67,30 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertTrue(self.send(to="@笔记员", message="记下来")["accepted"])
         self.assertEqual(self.dispatched[-1].target, "B")
 
-    def test_reply_ownership_and_final_replies_do_not_acknowledge_each_other(self):
+    def test_reply_ownership_and_no_answer_hint_does_not_close_unfinished_work(self):
         request = self.delivered(self.send(to="B", message="问题"))
         self.assertFalse(self.send(sender="C", to="A", message="fake", reply_to=request.id)["accepted"])
-        reply = self.delivered(self.send(sender="B", to="A", message="结论", reply_to=request.id))
+        reply = self.delivered(self.send(sender="B", to="A", message="2", reply_to=request.id))
         self.assertFalse(reply.communication["expect_reply"])
         self.assertEqual(reply.communication["chain_id"], request.communication["chain_id"])
-        result = self.send(to="B", message="谢谢", reply_to=reply.id)
-        self.assertFalse(result["accepted"])
-        self.assertIn("final informational", result["error"])
+        self.assertIn("does NOT close the conversation", reply.input_text)
+        self.assertIn("do not send an acknowledgement", reply.input_text)
+        result = self.send(to="B", message="3", reply_to=reply.id, expect_reply=True)
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual(self.peers.messages[result["message_id"]].communication["chain_id"], request.communication["chain_id"])
         self.room.active_entries["A"][1].peer_context = reply.id
-        self.assertFalse(self.send(to="B", message="谢谢")["accepted"])
+        self.assertFalse(self.send(to="B", message="3")["accepted"])
+
+    def test_counting_to_eleven_survives_intermediate_no_answer_hints(self):
+        receipt = self.send(to="B", message="1", expect_reply=True)
+        for number in range(2, 12):
+            previous = self.delivered(receipt)
+            receipt = self.send(sender=previous.target, to=previous.sender, message=str(number),
+                                reply_to=previous.id, expect_reply=number % 2 == 1 and number < 11)
+            self.assertTrue(receipt["accepted"], receipt)
+        self.assertEqual([e.body for e in self.dispatched], [str(n) for n in range(1, 12)])
+        self.assertEqual(len({e.communication["chain_id"] for e in self.dispatched}), 1)
+        self.assertFalse(self.dispatched[-1].communication["expect_reply"])
 
     def test_chain_budget_bounds_even_explicit_reciprocal_requests(self):
         receipt = self.send(to="B", message="start")

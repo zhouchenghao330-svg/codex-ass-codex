@@ -55,7 +55,10 @@ class PeerRouter:
                 + "\nFor user-requested cooperation use room.send_message (old sessions: "
                   "codex_room_public/send_message). Its message text is public. The receipt is not an answer; "
                   "do not wait or poll. A peer reply arrives as new input. Reply to a Room request using "
-                  "the same tool and its message_id; final replies should set expect_reply=false. "
+                  "the same tool and its message_id. expect_reply is only an answer-request hint, never a "
+                  "conversation lock: continue unfinished user-requested cooperation even if it is false. "
+                  "Use expect_reply=true for intermediate turns that need a peer's next contribution, "
+                  "false when no answer is needed. Do not send acknowledgement-only replies. "
                   "Do not contact members merely because they are listed.\n[/Codex Room host context]")
 
     def mcp_call(self, params):
@@ -133,8 +136,6 @@ class PeerRouter:
                     self.delivery(incoming, "steered")
                 else:
                     return self.error("That incoming message was not confirmed delivered.")
-            if not incoming.communication["expect_reply"]:
-                return self.error("This is a final informational reply. Do not acknowledge it; return to the user's task.")
         elif incoming and incoming.target == sender.name and incoming.sender == target.name:
             return self.error(f"To answer this request, set reply_to={incoming.id}. Do not start a duplicate conversation.")
         chain = incoming.communication["chain_id"] if incoming else answer.run_id

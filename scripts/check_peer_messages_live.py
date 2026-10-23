@@ -5,6 +5,7 @@ root, actual plaintext tool calls, and restart with original thread identities.
 Run: uv run python scripts/check_peer_messages_live.py
 """
 import asyncio
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -78,6 +79,20 @@ async def main():
             assert "RESTART_PUBLIC_OK" in [e for e in room.entries if is_public(e)][-1].body
             assert {a.name: a.thread_id for a in room.agents.values()} == identities
             print("PASS original threads + restored dynamic tools after restart, no replay", flush=True)
+            before_counting = len([e for e in room.entries if is_public(e)])
+            await room.submit(Prompt("@A 给 B 发消息，轮流数数，直到数到 11。你先数 1，B 数偶数，你数奇数。"
+                "只使用 Room 的公开 send_message 工具，不调用其他工具、不执行命令、不读写文件。"
+                "每条公开消息第一行只写本次数字，首条后面说明轮流数到 11 的要求。"
+                "每次只发送当前这一个数，不代替对方数。到 11 后结束，不再相互确认。"))
+            await until(lambda: all(not a.busy for a in room.agents.values()), timeout=300)
+            counted = [e for e in room.entries if is_public(e)][before_counting:]
+            assert len(counted) == 11, [(e.sender, e.body) for e in counted]
+            assert [int(re.search(r"\d+", e.body.splitlines()[0])[0]) for e in counted] == list(range(1, 12)), [e.body for e in counted]
+            assert [e.sender for e in counted] == ["A" if n % 2 else "B" for n in range(1, 12)]
+            assert all(e.communication["delivery"] in {"delivered", "steered"} for e in counted)
+            assert len({e.communication["chain_id"] for e in counted}) == 1
+            assert {a.name: a.thread_id for a in room.agents.values()} == identities
+            print("PASS two real Codex members alternate 1 through 11 without acknowledgement loops", flush=True)
         finally:
             await room.close()
 
