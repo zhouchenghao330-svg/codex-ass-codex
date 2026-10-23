@@ -12,6 +12,18 @@ from typing import BinaryIO
 WINDOWS = sys.platform == "win32"
 
 
+def utf8_stdio() -> None:
+    """Keep Chinese diagnostics usable in Windows consoles and redirected pipes."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+def print_status(message: str) -> None:
+    utf8_stdio()
+    print(message, flush=True)
+
+
 def lock_file(stream: BinaryIO) -> None:
     """Take a non-blocking process lock, released automatically on close/exit."""
     if WINDOWS:

@@ -24,6 +24,7 @@ impl Bridge {
             .args(["-u", "-m", "codex_room.backend"])
             .args(args)
             .env("PYTHONPATH", root)
+            .env("PYTHONIOENCODING", "utf-8")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

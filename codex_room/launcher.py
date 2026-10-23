@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .ui_release import DownloadError, ensure_binary
+from .platform_support import print_status, utf8_stdio
 
 
 def build_binary(root: Path) -> Path:
@@ -27,7 +28,7 @@ def build_binary(root: Path) -> Path:
         cargo = cargo or (str(fallback) if fallback.is_file() else None)
         if not cargo:
             raise SystemExit("--build-ui 是开发者模式，需要 Rust 1.88+：https://rustup.rs 。普通启动请去掉 --build-ui。")
-        print("正在构建本地 Rust 界面…", flush=True)
+        print_status("正在构建本地 Rust 界面…")
         result = subprocess.run([cargo, "build", "--release", "--locked", "--manifest-path", str(manifest),
                                  "--target-dir", str(target)], cwd=manifest.parent)
         if result.returncode:
@@ -36,6 +37,7 @@ def build_binary(root: Path) -> Path:
 
 
 def main() -> None:
+    utf8_stdio()
     arguments = sys.argv[1:]
     if "--legacy-ui" in arguments:
         sys.argv.remove("--legacy-ui")

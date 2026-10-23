@@ -12,10 +12,10 @@ import tempfile
 import time
 from urllib.request import Request, urlopen
 
-from .platform_support import lock_file
+from .platform_support import lock_file, print_status
 
 
-UI_VERSION = "0.2.1"
+UI_VERSION = "0.2.2"
 REPOSITORY = "zhouchenghao330-svg/codex-ass-codex"
 RELEASE_URL = f"https://github.com/{REPOSITORY}/releases/download/v{UI_VERSION}"
 TARGETS = {
@@ -128,7 +128,7 @@ def ensure_binary() -> Path:
         directory.mkdir(parents=True, exist_ok=True)
         with _installation_lock(directory):
             if not _valid_cache(executable, manifest, filename):
-                print(f"正在下载 Codex Room 界面 v{UI_VERSION}（{target}，仅首次需要）…", flush=True)
+                print_status(f"正在下载 Codex Room 界面 v{UI_VERSION}（{target}，仅首次需要）…")
                 with tempfile.TemporaryDirectory(prefix="download-", dir=directory) as temporary:
                     staged_manifest = Path(temporary) / "SHA256SUMS"
                     staged_binary = Path(temporary) / filename

@@ -35,9 +35,9 @@
 
 1. 同步修改 `ui_release.py` 的 `UI_VERSION`、`pyproject.toml`、`uv.lock`、`terminal-ui/Cargo.toml` 和 `Cargo.lock` 中当前项目的版本。
 2. 新建 `docs/releases/v版本.md`，运行 Python/Rust 检查并提交。
-3. 推送提交及 `v版本` tag。`.github/workflows/release-ui.yml` 验证版本和 Python 后端，在六个平台分别执行启动器检查、Rust 单测和 Release 构建。
+3. 给提交创建 `v版本` tag，先仅推送 tag，触发 `.github/workflows/release-ui.yml`。它验证版本和 Python 后端，在六个平台分别执行启动器检查、Rust 单测和 Release 构建。
 4. 全部成功后汇集六个程序，核对资产集合、生成 `SHA256SUMS`，上传为 draft，完成后才公开发布。不含本地房间、聊天、登录配置或虚拟环境。
-5. 使用空缓存运行 `uv run codex_room --help`，再断网重复验证缓存。完整 UI 可用 `--demo` 在 PTY 验证，不操作真实房间。
+5. 在该 tag 的源码目录使用空缓存运行 `uv run codex_room --help`，再断网重复验证缓存。完整 UI 可用 `--demo` 在 PTY 验证，不操作真实房间。验证后再推送 main，让普通用户拉到新版本时，对应成品已经可下载。
 
 Release notes 按 tag 自动选择。已公开的版本不覆盖程序；更改时增加版本并创建新 tag。平台失败不会发布缺件版本。上传失败后，先检查并清理同一 tag 未完成的 draft 再重跑，不覆盖已公开资产。
 

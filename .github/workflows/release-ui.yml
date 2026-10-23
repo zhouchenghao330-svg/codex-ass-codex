@@ -73,7 +73,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
           linker_variable="CARGO_TARGET_$(echo "$UI_TARGET" | tr '[:lower:]-' '[:upper:]_')_LINKER"
-          echo "$linker_variable=musl-gcc" >> "$GITHUB_ENV"
+          # Use Rust's matching CRT and linker, rather than mixing musl-gcc's
+          # system startup objects with Rust's self-contained static PIE.
+          echo "$linker_variable=rust-lld" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C link-self-contained=yes" >> "$GITHUB_ENV"
       - name: Test and build native UI
         env:
           UI_TARGET: ${{ matrix.target }}

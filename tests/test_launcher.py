@@ -1,4 +1,5 @@
 import hashlib
+import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from codex_room import launcher, ui_release as release
+from codex_room.platform_support import print_status
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,12 +56,12 @@ class ReleaseTests(unittest.TestCase):
         self.digest = hashlib.sha256(self.content).hexdigest()
         self.requests.clear()
         self.files.clear()
-        self.files.update({f"/v0.2.1/{self.filename}": self.content,
-                           "/v0.2.1/SHA256SUMS": f"{self.digest}  {self.filename}\n".encode()})
+        self.files.update({f"/fixture/{self.filename}": self.content,
+                           "/fixture/SHA256SUMS": f"{self.digest}  {self.filename}\n".encode()})
         self.env = patch.dict(os.environ, {"CODEX_ROOM_CACHE_DIR": self.temporary.name})
         self.env.start()
         self.addCleanup(self.env.stop)
-        self.url = patch.object(release, "RELEASE_URL", f"http://127.0.0.1:{self.server.server_port}/v0.2.1")
+        self.url = patch.object(release, "RELEASE_URL", f"http://127.0.0.1:{self.server.server_port}/fixture")
         self.url.start()
         self.addCleanup(self.url.stop)
 
@@ -87,12 +89,12 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 4)
 
     def test_bad_download_not_installed_and_retry_works(self):
-        self.files[f"/v0.2.1/{self.filename}"] = b"incomplete"
+        self.files[f"/fixture/{self.filename}"] = b"incomplete"
         with self.assertRaisesRegex(release.DownloadError, "SHA-256"):
             release.ensure_binary()
         self.assertFalse(list(Path(self.temporary.name).rglob(self.filename)))
         self.assertFalse(list(Path(self.temporary.name).rglob("download-*")))
-        self.files[f"/v0.2.1/{self.filename}"] = self.content
+        self.files[f"/fixture/{self.filename}"] = self.content
         self.assertEqual(release.ensure_binary().read_bytes(), self.content)
 
     def test_missing_release_has_actionable_error(self):
@@ -156,6 +158,14 @@ class ReleaseTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
+    def test_chinese_status_with_windows_redirect_encoding(self):
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252", newline="\n")
+        with patch.object(sys, "stdout", stream):
+            print_status("正在下载界面…")
+        self.assertEqual(buffer.getvalue().decode("utf-8"), "正在下载界面…\n")
+        stream.close()
+
     def launch(self, arguments, environment=None):
         process = Mock()
         process.wait.return_value = 7
