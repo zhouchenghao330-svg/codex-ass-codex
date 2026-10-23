@@ -25,6 +25,60 @@ fn select_rows(app: &mut App, first: usize, a: usize, last: usize, b: usize) {
 }
 
 #[test]
+fn markdown_code_blocks_render_without_fences_and_copy_only_code() {
+    let source = include_str!("../../tests/fixtures/markdown_code_blocks.md");
+    let mut legacy = entry("legacy-code", "A", source);
+    legacy["blocks"] = json!([]);
+    let mut reply = entry("reply-code", "A", source);
+    reply["blocks"] = json!([{"id":"text","kind":"text","text":source}]);
+    let mut peer = entry("peer-code", "A", source);
+    peer["target"] = json!("B");
+    peer["communication"] = json!({"content_available":true,"target_label":"B"});
+    let mut app = app(vec![legacy, reply, peer]);
+    for width in [157, 92, 47] {
+        app.timeline.width = width;
+        app.timeline.invalidate();
+        app.rebuild = true;
+        app.rebuild();
+        for message in 0..3 {
+            let rows = app
+                .timeline
+                .rows
+                .iter()
+                .filter(|r| r.message == message)
+                .collect::<Vec<_>>();
+            let text = rows
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!text.contains("```"), "{text}");
+            assert!(!text.contains("dotenv"));
+            assert!(text.contains("TAVILY_API_KEY=你的正式Key"));
+            assert!(text.contains("TAVILY_API_KEYS=[\"key1\",\"key2\",\"key3\"]"));
+            assert!(text.contains("3. API 和 Chat Worker"));
+            let code = "{\"tool_id\":\"web_search\",\"visible\":true}";
+            let index = app
+                .timeline
+                .rows
+                .iter()
+                .position(|r| r.message == message && r.text == code)
+                .unwrap();
+            assert!(
+                app.timeline.rows[index]
+                    .line
+                    .spans
+                    .iter()
+                    .any(|s| s.style.fg.is_some_and(|fg| fg != FG))
+            );
+            select_rows(&mut app, index, 0, index, code.len());
+            assert_eq!(app.selected_text(), code);
+        }
+        app.selection = None;
+    }
+}
+
+#[test]
 fn centered_reading_preserves_position_and_original_colors() {
     use ratatui::{Terminal, backend::TestBackend};
     let text = (0..40)
@@ -364,7 +418,7 @@ fn mixed_table_selection_keeps_prose_code_and_separate_tables() {
     select_rows(&mut app, first, 0, last, end);
     assert_eq!(
         app.selected_text(),
-        "before\n\n```text\n┌───┐\n│ X │\n├───┤\n│ Y │\n└───┘\n```\n\nX\nY\n\nbetween\n\nX\nZ\n\nafter"
+        "before\n\n┌───┐\n│ X │\n├───┤\n│ Y │\n└───┘\n\nX\nY\n\nbetween\n\nX\nZ\n\nafter"
     );
 }
 

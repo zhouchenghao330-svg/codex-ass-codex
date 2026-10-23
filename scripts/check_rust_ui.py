@@ -251,6 +251,36 @@ class RustUITests(unittest.TestCase):
         self.finish()
         self.assertFalse(json.loads((directory/"state.json").read_text())["reading_centered"])
 
+    def test_nested_code_blocks_hide_markdown_fences_and_preserve_saved_source(self):
+        source = (ROOT/"tests/fixtures/markdown_code_blocks.md").read_text()
+        directory = self.cwd/".codex-room"
+        directory.mkdir()
+        (directory/"state.json").write_text(json.dumps({"version":2,"agents":[{
+            "name":"A","label":"A","color":"#afb4ff","cwd":str(self.cwd)}],
+            "selected":"A","show_all":False,
+            "entries":[{"id":"code","sender":"A","body":source,"state":"done",
+                        "blocks":[{"id":"text","kind":"text","text":source}]}]}))
+        self.start(columns=110, rows=42)
+
+        def check():
+            self.session.wait(lambda:'{"tool_id":"web_search","visible":true}' in self.session.visible)
+            self.assertNotIn("```",self.session.visible)
+            self.assertIn('TAVILY_API_KEYS=["key1","key2","key3"]',self.session.visible)
+            self.assertIn("3. API 和 Chat Worker",self.session.visible)
+
+        check()
+        self.session.resize(80,45)
+        check()
+        self.session.resize(160,45)
+        self.command("/adhd on",finish="居中阅读已开启")
+        check()
+        self.finish()
+        saved = json.loads((directory/"state.json").read_text())
+        code = next(e for e in saved["entries"] if e["id"] == "code")
+        self.assertEqual(code["body"],source)
+        self.assertEqual(code["blocks"][0]["text"],source)
+        self.assertIsNone(saved["agents"][0]["thread_id"])
+
     def test_markdown_table_columns_reflow_with_sidebar_and_terminal_width(self):
         source = (ROOT/"tests/fixtures/markdown_table.md").read_text()
         directory = self.cwd/".codex-room"

@@ -9,6 +9,15 @@ pub const MUTED: Color = Color::Rgb(147, 152, 142);
 pub const ACCENT: Color = Color::Rgb(169, 182, 255);
 pub const BG: Color = Color::Rgb(30, 33, 31);
 #[derive(Clone)]
+struct RoomMarkdown;
+impl tui_markdown::StyleSheet for RoomMarkdown {
+    // Fences describe Markdown structure; they are not part of the code shown
+    // to the reader. Keep literal backticks inside code untouched by the parser.
+    fn code_block_fence(&self) -> &str {
+        ""
+    }
+}
+#[derive(Clone)]
 pub struct Row {
     pub line: Line<'static>,
     pub text: String,
@@ -23,8 +32,8 @@ pub struct Row {
 pub fn parse(source: &str, width: usize) -> Vec<Line<'static>> {
     // Tables must wrap their cells before the outer line wrapper runs; wrapping
     // a natural-width table as plain text splits its borders and columns apart.
-    let options =
-        tui_markdown::Options::default().table_width(width.clamp(1, u16::MAX as usize) as u16);
+    let options = tui_markdown::Options::new(RoomMarkdown)
+        .table_width(width.clamp(1, u16::MAX as usize) as u16);
     tui_markdown::from_str_with_options(&clean(source), &options)
         .lines
         .into_iter()
@@ -244,6 +253,31 @@ pub fn word_span(text: &str, byte: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn code_fence_presentation_preserves_literal_backticks_and_streaming_code() {
+        let source = "Before\n\n````text\n```json\n    literal indentation\n```\n````\n\nAfter";
+        let text = parse(source, 92)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("```json\n    literal indentation\n```"),
+            "{text}"
+        );
+        assert!(!text.contains("````text"));
+        assert!(text.ends_with("After"));
+        let text = parse("```not-a-language\nfirst\n    streaming", 92)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text, "first\n    streaming");
+        assert_eq!(
+            parse("The literal marker is ` ``` `.", 92)[0].to_string(),
+            "The literal marker is ```."
+        );
+    }
     #[test]
     fn terminal_controls_cannot_escape_tool_output() {
         let rows = wrap(
