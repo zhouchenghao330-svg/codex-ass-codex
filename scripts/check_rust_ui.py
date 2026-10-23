@@ -395,9 +395,14 @@ class RustUITests(unittest.TestCase):
         self.session.close();self.session=None
         self.start(columns=110,rows=34)
         self.assertIn("KEEP_THREAD",self.session.visible)
-        self.command("settings",finish="sandboxPolicy")
+        # The added serviceTier field can put 'sandboxPolicy' across a visual
+        # wrap. Wait for a visible value, then verify the original JSON below.
+        self.command("settings",finish="dangerFullAccess")
         self.finish()
-        self.assertEqual(json.loads((self.cwd/".codex-room/state.json").read_text())["agents"][0]["thread_id"],tid)
+        restored = json.loads((self.cwd/".codex-room/state.json").read_text())
+        self.assertEqual(restored["agents"][0]["thread_id"],tid)
+        settings = json.loads(next(e["body"] for e in reversed(restored["entries"]) if e["sender"]=="开发").split(": ",1)[1])
+        self.assertEqual(settings["sandboxPolicy"]["type"],"dangerFullAccess")
 
     def test_selection_filter_forward_return_latest_and_resize(self):
         self.start(columns=110,rows=34)

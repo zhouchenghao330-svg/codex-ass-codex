@@ -2,6 +2,7 @@ mod bridge;
 mod history;
 mod input;
 mod paste;
+mod table_copy;
 mod terminal;
 #[cfg(test)]
 mod tests;
@@ -704,32 +705,27 @@ impl App {
                 .iter()
                 .flat_map(|r| r.blocks.iter().map(String::as_str))
                 .collect();
-            let chosen_text = rows
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| {
-                    r.message == index
-                        && r.blocks.iter().all(|id| {
-                            e["blocks"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .find(|b| string(b, "id") == id)
-                                .is_none_or(|b| string(b, "kind") == "text")
-                        })
-                        && !r.working
-                        && r.action != "meta"
-                        && !r.action.starts_with("collapse:")
-                        && !r.action.starts_with("quote:")
-                })
-                .filter_map(|(n, r)| {
-                    selection
-                        .span(first.row + n, r.text.len())
-                        .and_then(|(a, b)| r.text.get(a..b))
-                        .map(str::to_owned)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let chosen_text = table_copy::selected_text(
+                selection,
+                rows.iter()
+                    .enumerate()
+                    .filter(|(_, r)| {
+                        r.message == index
+                            && r.blocks.iter().all(|id| {
+                                e["blocks"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .find(|b| string(b, "id") == id)
+                                    .is_none_or(|b| string(b, "kind") == "text")
+                            })
+                            && !r.working
+                            && r.action != "meta"
+                            && !r.action.starts_with("collapse:")
+                            && !r.action.starts_with("quote:")
+                    })
+                    .map(|(n, r)| (first.row + n, r)),
+            );
             let mut blocks = Vec::new();
             if full {
                 blocks = e["blocks"].as_array().cloned().unwrap_or_default();
@@ -737,20 +733,16 @@ impl App {
                 for b in e["blocks"].as_array().into_iter().flatten() {
                     if string(b, "kind") == "text" {
                         if ids.contains(string(b, "id")) {
-                            let text = rows
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, r)| {
-                                    r.message == index
-                                        && r.blocks.iter().any(|id| id == string(b, "id"))
-                                })
-                                .filter_map(|(n, r)| {
-                                    selection
-                                        .span(first.row + n, r.text.len())
-                                        .and_then(|(a, b)| r.text.get(a..b))
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
+                            let text = table_copy::selected_text(
+                                selection,
+                                rows.iter()
+                                    .enumerate()
+                                    .filter(|(_, r)| {
+                                        r.message == index
+                                            && r.blocks.iter().any(|id| id == string(b, "id"))
+                                    })
+                                    .map(|(n, r)| (first.row + n, r)),
+                            );
                             let mut block = b.clone();
                             block["text"] = json!(text);
                             blocks.push(block);
@@ -879,6 +871,24 @@ impl App {
                     let prompt =
                         Input::from_prompt(&json!({"text":display,"attachments":e["attachments"]}));
                     parts.push(prompt.slice(start.0, end.1).full_text());
+                }
+            } else if row.table.is_some() {
+                let start = at;
+                while at <= last.row
+                    && at < self.timeline.rows.len()
+                    && self.timeline.rows[at].table.is_some()
+                {
+                    at += 1;
+                }
+                let text = table_copy::selected_text(
+                    selection,
+                    self.timeline.rows[start..at]
+                        .iter()
+                        .enumerate()
+                        .map(|(n, r)| (start + n, r)),
+                );
+                if !text.is_empty() {
+                    parts.push(text);
                 }
             } else {
                 let text = &row.text;

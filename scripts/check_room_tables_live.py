@@ -230,7 +230,8 @@ class UI:
                               "copied_line_count":len(copied.splitlines())}
         assert source == self.source,"stored original Markdown changed"
         assert URL in copied,"rendered selection splits the original URL across table borders/newlines"
-        return {"clipboard_is_private_capture":True,"stored_source_unchanged":True}
+        assert not any(char in copied for char in "┌┬┐├┼┤└┴┘│"),"clipboard contains drawn table borders"
+        return self.last_evidence
 
     def restart(self):
         before = self.state()

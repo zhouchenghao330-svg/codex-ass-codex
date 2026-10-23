@@ -102,7 +102,197 @@ fn markdown_tables_fit_chat_columns_after_sidebar_and_window_resize() {
                         && s.style.add_modifier.contains(Modifier::UNDERLINED))
             );
             assert_eq!(app.entries[message]["body"], source);
+            assert!(
+                rows.iter().all(|r| r.table.is_some()),
+                "table mapping missing at width {width}"
+            );
+            let first = app
+                .timeline
+                .rows
+                .iter()
+                .position(|r| std::ptr::eq(r, *rows.first().unwrap()))
+                .unwrap();
+            let last = first + rows.len() - 1;
+            let copied = table_copy::selected_text(
+                Selection {
+                    anchor: Point {
+                        row: first,
+                        byte: 0,
+                    },
+                    head: Point {
+                        row: last,
+                        byte: rows.last().unwrap().text.len(),
+                    },
+                },
+                rows.iter().enumerate().map(|(n, r)| (first + n, *r)),
+            );
+            assert!(!copied.contains('│') && !copied.contains('┌'), "{copied}");
+            assert!(copied.contains("https://example.com/reference/very-long-continuous-path/without-any-spaces/terminal-markdown-table-width#END_OF_LONG_URL"), "{copied}");
         }
+    }
+}
+
+#[test]
+fn table_clipboard_and_forwarding_preserve_only_selected_characters() {
+    let url = format!(
+        "https://example.com/{}#",
+        "abcdefghijklmnopqrstuvwxyz".repeat(4)
+    );
+    let source = format!(
+        "before\n\n| 名称 | 内容 |\n| :--- | ---: |\n| 中文 | [参考]({url}) |\n| next | 留在原处 |\n\nafter"
+    );
+    let mut reply = entry("reply", "A", &source);
+    reply["blocks"] = json!([{"id":"text","kind":"text","text":source}]);
+    let mut app = app(vec![reply]);
+    app.timeline.width = 32;
+    app.timeline.invalidate();
+    app.rebuild = true;
+    app.rebuild();
+    let first = app
+        .timeline
+        .rows
+        .iter()
+        .position(|r| r.text.contains("https"))
+        .unwrap();
+    let last = app
+        .timeline
+        .rows
+        .iter()
+        .position(|r| r.text.contains('#'))
+        .unwrap();
+    assert!(last > first + 3);
+    let a = app.timeline.rows[first].text.find("https").unwrap();
+    let b = app.timeline.rows[last].text.find('#').unwrap() + 1;
+    select_rows(&mut app, first, a, last, b);
+    assert_eq!(app.selected_text(), url);
+    let quote = app.quote().unwrap();
+    assert_eq!(quote["messages"][0]["text"], url);
+    assert_eq!(quote["messages"][0]["blocks"][0]["text"], url);
+    // Reverse dragging and endpoints inside the URL must not expand the range.
+    app.selection = Some(Selection {
+        anchor: Point {
+            row: last,
+            byte: b - 1,
+        },
+        head: Point {
+            row: first,
+            byte: a + 4,
+        },
+    });
+    assert_eq!(app.selected_text(), &url[4..url.len() - 1]);
+    let row = app
+        .timeline
+        .rows
+        .iter()
+        .position(|r| r.text.contains("中文"))
+        .unwrap();
+    let a = app.timeline.rows[row].text.find("中文").unwrap();
+    select_rows(&mut app, row, a, row, a + "中".len());
+    assert_eq!(app.selected_text(), "中");
+    select_rows(&mut app, first, 0, first, '│'.len_utf8());
+    assert_eq!(app.selected_text(), "");
+}
+
+#[test]
+fn table_copy_preserves_word_spaces_empty_cells_alignment_and_inline_syntax() {
+    let source = "| L | C | R |\n| :-- | :-: | --: |\n| alpha  beta gamma delta | **中文** `code` &amp; x\\|y │ | [说明][ref] |\n| | 留下 | |\n\n[ref]: https://example.com/some/long/path?q=1&x=2";
+    let expected = "L\tC\tR\nalpha  beta gamma delta\t中文 code & x|y │\t说明 (https://example.com/some/long/path?q=1&x=2)\n\t留下\t";
+    for prefix in ["", "> ", "  "] {
+        let source = source
+            .lines()
+            .map(|line| format!("{prefix}{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for width in [8, 12, 24, 47, 80, 157] {
+            let mut app = app(vec![entry("reply", "A", &source)]);
+            app.timeline.width = width;
+            app.timeline.invalidate();
+            app.rebuild = true;
+            app.rebuild();
+            let first = app
+                .timeline
+                .rows
+                .iter()
+                .position(|r| r.text.contains('┌'))
+                .unwrap();
+            let last = app
+                .timeline
+                .rows
+                .iter()
+                .position(|r| r.text.contains('┘'))
+                .unwrap();
+            assert!(
+                app.timeline.rows[first..=last]
+                    .iter()
+                    .all(|r| r.table.is_some()),
+                "mapping {prefix:?} at {width}"
+            );
+            let end = app.timeline.rows[last].text.len();
+            select_rows(&mut app, first, 0, last, end);
+            assert_eq!(app.selected_text(), expected, "{prefix:?} at {width}");
+            assert_eq!(app.entries[0]["body"], source);
+        }
+    }
+}
+
+#[test]
+fn mixed_table_selection_keeps_prose_code_and_separate_tables() {
+    let source = "before\n\n```text\n┌───┐\n│ X │\n├───┤\n│ Y │\n└───┘\n```\n\n| X |\n| - |\n| Y |\n\nbetween\n\n| X |\n| - |\n| Z |\n\nafter";
+    let mut app = app(vec![entry("reply", "A", source)]);
+    let first = app
+        .timeline
+        .rows
+        .iter()
+        .position(|r| r.text == "before")
+        .unwrap();
+    let last = app
+        .timeline
+        .rows
+        .iter()
+        .position(|r| r.text == "after")
+        .unwrap();
+    let end = app.timeline.rows[last].text.len();
+    select_rows(&mut app, first, 0, last, end);
+    assert_eq!(
+        app.selected_text(),
+        "before\n\n```text\n┌───┐\n│ X │\n├───┤\n│ Y │\n└───┘\n```\n\nX\nY\n\nbetween\n\nX\nZ\n\nafter"
+    );
+}
+
+#[test]
+fn table_copy_handles_graphemes_images_math_and_footnotes_in_a_list() {
+    let source = "- | 内容 | 引用 |\n  | - | - |\n  | 👩‍💻é界 **粗体** | ![图](img.png) $x$ 参考[^n] |\n\n[^n]: 注释正文";
+    for width in [10, 24, 80] {
+        let mut app = app(vec![entry("reply", "A", source)]);
+        app.timeline.width = width;
+        app.timeline.invalidate();
+        app.rebuild = true;
+        app.rebuild();
+        let first = app
+            .timeline
+            .rows
+            .iter()
+            .position(|r| r.text.contains('┌'))
+            .unwrap();
+        let last = app
+            .timeline
+            .rows
+            .iter()
+            .position(|r| r.text.contains('┘'))
+            .unwrap();
+        assert!(
+            app.timeline.rows[first..=last]
+                .iter()
+                .all(|r| r.table.is_some()),
+            "mapping {width}"
+        );
+        let end = app.timeline.rows[last].text.len();
+        select_rows(&mut app, first, 0, last, end);
+        assert_eq!(
+            app.selected_text(),
+            "内容\t引用\n👩‍💻é界 粗体\t[img] 图 $x$ 参考[n]",
+            "{width}"
+        );
     }
 }
 #[test]

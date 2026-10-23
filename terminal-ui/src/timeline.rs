@@ -148,18 +148,17 @@ impl Timeline {
                         blocks: Vec<String>,
                         full: bool,
                         working: bool| {
-            for line in history::wrap(line, self.width) {
-                rows.push(Row {
-                    text: line.to_string(),
-                    line,
-                    message: index,
-                    action: action.clone(),
-                    blocks: blocks.clone(),
-                    full,
-                    working,
-                    source_start: None,
-                });
-            }
+            rows.push(Row {
+                text: line.to_string(),
+                line,
+                message: index,
+                action,
+                blocks,
+                full,
+                working,
+                source_start: None,
+                table: None,
+            });
         };
         if sender == "system" {
             for l in string(e, "body").lines() {
@@ -595,6 +594,60 @@ impl Timeline {
             }
         }
         push(Line::raw(""), "meta".into(), vec![], false, false);
+        // Cache table-to-cell mappings with the layout, never while dragging.
+        // Tool output and fenced code keep their literal clipboard contents.
+        if sender != "you" && sender != "system" && e["collapsed"].as_bool() != Some(true) {
+            if e["communication"].is_object() {
+                crate::table_copy::attach(
+                    string(e, "body"),
+                    rows.iter_mut()
+                        .filter(|r| r.blocks.iter().any(|id| id == "message")),
+                );
+            } else if let Some(blocks) = e["blocks"].as_array().filter(|b| !b.is_empty()) {
+                for block in blocks.iter().filter(|b| string(b, "kind") == "text") {
+                    crate::table_copy::attach(
+                        string(block, "text"),
+                        rows.iter_mut()
+                            .filter(|r| r.blocks.iter().any(|id| id == string(block, "id"))),
+                    );
+                }
+            } else {
+                crate::table_copy::attach(
+                    string(e, "body"),
+                    rows.iter_mut()
+                        .filter(|r| r.action.is_empty() && !r.working),
+                );
+            }
+        }
+        // Map before the final wrapper: an extremely narrow pane can even wrap
+        // a table's borders. Slice the map along with those outer line breaks.
+        let mut rows = rows
+            .into_iter()
+            .flat_map(|row| {
+                let mut offset = 0;
+                history::wrap(row.line, self.width)
+                    .into_iter()
+                    .map(move |line| {
+                        let text = line.to_string();
+                        let table = row
+                            .table
+                            .as_ref()
+                            .map(|table| table.slice(offset..offset + text.len()));
+                        offset += text.len();
+                        Row {
+                            line,
+                            text,
+                            table,
+                            message: row.message,
+                            action: row.action.clone(),
+                            blocks: row.blocks.clone(),
+                            full: row.full,
+                            working: row.working,
+                            source_start: None,
+                        }
+                    })
+            })
+            .collect::<Vec<_>>();
         let mut previous = None;
         let mut offset = 0;
         for row in &mut rows {

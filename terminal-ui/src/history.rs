@@ -18,6 +18,7 @@ pub struct Row {
     pub full: bool,
     pub working: bool,
     pub source_start: Option<usize>,
+    pub table: Option<crate::table_copy::TableLine>,
 }
 pub fn parse(source: &str, width: usize) -> Vec<Line<'static>> {
     // Tables must wrap their cells before the outer line wrapper runs; wrapping
@@ -79,7 +80,7 @@ pub fn wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
 }
 /// Treat tool output as text, never as terminal commands (OSC 52, cursor moves,
 /// screen clears). Preserve ordinary Unicode, newlines and readable tab spacing.
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
