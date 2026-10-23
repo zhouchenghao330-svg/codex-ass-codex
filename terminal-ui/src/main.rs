@@ -470,23 +470,33 @@ impl App {
                 self.edited();
             }
             "choose" => {
-                let items = v["values"]
+                let items: Vec<Item> = v["values"]
                     .as_array()
                     .into_iter()
                     .flatten()
                     .map(|m| Item {
-                        label: string(m, "value").into(),
+                        label: m["label"].as_str().unwrap_or(string(m, "value")).into(),
                         detail: string(m, "detail").into(),
                         value: string(m, "value").into(),
                     })
                     .collect();
+                let selected = items
+                    .iter()
+                    .position(|item| item.value == string(&v, "selected"))
+                    .unwrap_or(0);
+                let action = v["action"].as_str().unwrap_or("command").to_owned();
+                let data = if action == "command" {
+                    v["prefix"].clone()
+                } else {
+                    v["data"].clone()
+                };
                 self.modal = Some(Modal::Picker {
                     title: string(&v, "title").into(),
                     items,
                     filter: Input::default(),
-                    selected: 0,
-                    action: "command".into(),
-                    data: v["prefix"].clone(),
+                    selected,
+                    action,
+                    data,
                 });
             }
             "action" => match string(&v, "action") {
@@ -1338,6 +1348,12 @@ impl App {
                             item.value
                         )));
                         self.edited();
+                    }
+                    "member-model" => {
+                        bridge.send(json!({"type":"member-model","member":data["member"],"model":item.value}));
+                    }
+                    "member-effort" => {
+                        bridge.send(json!({"type":"member-effort","member":data["member"],"model":data["model"],"effort":item.value}));
                     }
                     "approval" => {
                         let accepted = item.value == "accept";

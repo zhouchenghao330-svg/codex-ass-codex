@@ -470,6 +470,12 @@ impl App {
                             .min(inner.right().saturating_sub(1)),
                         inner.y,
                     ));
+                    if matches!(action.as_str(), "member-model" | "member-effort") {
+                        f.render_widget(
+                            Line::styled("↑↓ / 鼠标选择 · Enter 确认 · Esc 保留原配置", MUTED),
+                            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+                        );
+                    }
                 }
                 self.modal_list_y = start;
                 let available = inner.bottom().saturating_sub(start) as usize;

@@ -20,6 +20,12 @@ def send(session,text):
     if text in "\n".join(session.visible.splitlines()[-3:]):
         session.send(b"\r")
     session.wait(lambda:"正在确认发送" not in session.visible)
+    if text.startswith("/add "):
+        session.wait(lambda:"选择模型 ·" in session.visible)
+        session.send(b"\r")
+        session.wait(lambda:"选择思考强度 ·" in session.visible)
+        session.send(b"\r")
+        session.wait(lambda:"已设置 ·" in session.visible and "选择思考强度 ·" not in session.visible)
 
 
 def main():

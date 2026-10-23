@@ -198,8 +198,58 @@ class Service:
         config = self.client.config
         if member.cwd != str(self.cwd):
             config = (await self.client.request("config/read", {"includeLayers": False, "cwd": member.cwd})).get("config", {})
-        member.model = member.model or config.get("model") or ""
-        member.effort = member.effort or config.get("model_reasoning_effort") or ""
+        configured_model = config.get("model") or ""
+        member.model = member.model or configured_model
+        if not member.effort:
+            catalog = next((m for m in self.client.models if m["id"] == member.model), {})
+            effort = (config.get("model_reasoning_effort") if member.model == configured_model else
+                      catalog.get("defaultReasoningEffort")) or ""
+            if catalog:
+                supported = [e["reasoningEffort"] for e in catalog.get("supportedReasoningEfforts", [])]
+                if effort not in supported:
+                    effort = catalog.get("defaultReasoningEffort", "")
+                if effort not in supported:
+                    effort = supported[0] if supported else ""
+            member.effort = effort
+
+    def choose_model(self, member):
+        models = list(self.client.models) if self.client else []
+        if member.model and not any(m["id"] == member.model for m in models):
+            models.insert(0, {"id": member.model, "displayName": "当前项目模型"})
+        if not models:
+            models = [{"id": member.model, "displayName": "沿用项目默认"}]
+        selected = member.model or next((m["id"] for m in models if m.get("isDefault")), models[0]["id"])
+        self.emit({"type": "choose", "title": f"选择模型 · @{member.label} · 1/2",
+                   "action": "member-model", "data": {"member": member.name}, "selected": selected,
+                   "values": [{"value": m["id"], "label": m["id"] or "沿用项目默认",
+                               "detail": m.get("displayName", "") + (" · 当前" if m["id"] == member.model else "")}
+                              for m in models]})
+
+    def choose_effort(self, member, model):
+        catalog = next((m for m in (self.client.models if self.client else []) if m["id"] == model), {})
+        efforts = catalog.get("supportedReasoningEfforts", [])
+        if not efforts:
+            # Do not advertise invented levels for custom or non-reasoning models.
+            current = member.effort if not catalog and model == member.model else ""
+            efforts = [{"reasoningEffort": current, "description": "沿用当前配置" if current else "使用模型默认"}]
+        values = [e["reasoningEffort"] for e in efforts]
+        selected = (member.effort if model == member.model and member.effort in values else
+                    catalog.get("defaultReasoningEffort", ""))
+        self.emit({"type": "choose", "title": f"选择思考强度 · @{member.label} · 2/2 · {model or '项目默认'}",
+                   "action": "member-effort", "data": {"member": member.name, "model": model},
+                   "selected": selected if selected in values else values[0],
+                   "values": [{"value": e["reasoningEffort"], "label": e["reasoningEffort"] or "模型默认",
+                               "detail": e.get("description", "")} for e in efforts]})
+
+    def set_model(self, member, model, effort):
+        catalog = next((m for m in (self.client.models if self.client else []) if m["id"] == model), {})
+        supported = [e["reasoningEffort"] for e in catalog.get("supportedReasoningEfforts", [])]
+        if not isinstance(model, str) or not isinstance(effort, str):
+            raise ValueError("模型和思考强度必须是文字")
+        allowed = supported if "supportedReasoningEfforts" in catalog else EFFORTS
+        if effort and effort not in allowed:
+            raise ValueError(f"不支持该推理强度，可用：{', '.join(allowed) or '模型默认'}")
+        member.model, member.effort = model, effort
 
     async def command(self, value, target=None):
         parts = value.split(maxsplit=2)
@@ -218,6 +268,7 @@ class Service:
             self.agents[name] = member
             self.selected, self.show_all = name, False
             self.notify(f"@{name} 已加入 · {cwd}")
+            self.choose_model(member)
         elif verb == "/rename":
             if len(parts) == 3:
                 target, label = resolve_member(parts[1], self.agents), parts[2]
@@ -253,19 +304,11 @@ class Service:
             if verb == "/model":
                 models = self.client.models if self.client else []
                 if not args:
-                    if not models:
-                        self.notify("Codex 未返回模型列表，请直接填写 /model 模型名 [推理强度]")
-                        self.emit({"type": "prefill", "text": f"@{member.label} /model "})
-                        return True
-                    self.emit({"type": "choose", "title": "选择模型", "prefix": f"@{member.label} /model ",
-                               "values": [{"value": m["id"], "detail": ", ".join(e["reasoningEffort"] for e in m.get("supportedReasoningEfforts", []))} for m in models]})
+                    self.choose_model(member)
                     return True
                 catalog = next((m for m in models if m["id"] == args[0]), {})
                 effort = (args[1] if len(args) > 1 else "") or catalog.get("defaultReasoningEffort") or member.effort
-                supported = [e["reasoningEffort"] for e in catalog.get("supportedReasoningEfforts", [])]
-                if effort and (effort not in EFFORTS or (supported and effort not in supported)):
-                    raise ValueError(f"不支持该推理强度，可用：{', '.join(supported or EFFORTS)}")
-                member.model, member.effort = args[0], effort
+                self.set_model(member, args[0], effort)
             else:
                 if not args:
                     self.emit({"type": "choose", "title": "选择权限", "prefix": f"@{member.label} /permissions ",
@@ -802,6 +845,23 @@ class Service:
             self.show_all = message.get("show_all", False)
             self.dirty = True
             self.members()
+        elif kind in {"member-model", "member-effort"}:
+            member = self.agents.get(message.get("member"))
+            if not member:
+                raise ValueError("这个成员已不存在，请重新创建或选择成员")
+            if member.parent_name:
+                raise ValueError("原生子代理的模型由 Codex 父会话管理")
+            model = message.get("model")
+            known = {m["id"] for m in (self.client.models if self.client else [])}
+            if not isinstance(model, str) or (model not in known and model != member.model):
+                raise ValueError("模型列表已变化，请重新用 /model 选择")
+            if kind == "member-model":
+                self.choose_effort(member, model)
+            else:
+                self.set_model(member, model, message.get("effort"))
+                self.dirty = True
+                self.members()
+                self.notify(f"@{member.label} 已设置 · {member.model or '项目默认'} · {member.effort or '模型默认'} · 下一轮生效")
         elif kind == "collapse":
             entry = next((e for e in self.entries if e.id == message["id"]), None)
             if entry:

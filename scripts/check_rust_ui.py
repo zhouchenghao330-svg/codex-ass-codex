@@ -45,7 +45,7 @@ class RustUITests(unittest.TestCase):
         self.session = Session([str(BINARY),"--cwd",str(self.cwd)],**kwargs)
         self.session.wait(lambda:"已连接" in self.session.visible)
 
-    def command(self,text,finish=None):
+    def command(self,text,finish=None,setup=True):
         self.session.send(text.encode())
         self.session.wait(lambda:text in "\n".join(self.session.visible.splitlines()[-4:]))
         self.session.send(b"\r")
@@ -54,6 +54,12 @@ class RustUITests(unittest.TestCase):
         if text in "\n".join(self.session.visible.splitlines()[-3:]):
             self.session.send(b"\r") # Enter first accepted an exact completion.
         self.session.wait(lambda:text not in "\n".join(self.session.visible.splitlines()[-3:]) and "正在确认发送" not in self.session.visible)
+        if setup and text.startswith("/add "):
+            self.session.wait(lambda:"选择模型 ·" in self.session.visible)
+            self.session.send(b"\r")
+            self.session.wait(lambda:"选择思考强度 ·" in self.session.visible)
+            self.session.send(b"\r")
+            self.session.wait(lambda:"已设置 ·" in self.session.visible and "选择思考强度 ·" not in self.session.visible)
         if finish:
             self.session.wait(lambda:finish in self.session.visible)
 
@@ -135,6 +141,49 @@ class RustUITests(unittest.TestCase):
         self.session.send(b"\x03")  # Only plain Ctrl+C with no selection exits.
         self.assertEqual(self.session.finish(send_quit=False), 0)
         self.assert_keyboard_restored()
+
+    def test_add_model_and_effort_picker_mouse_keyboard_cancel_and_restore(self):
+        self.start(columns=110, rows=34)
+        self.command("/add 配置测试",setup=False)
+        self.session.wait(lambda:"选择模型 · @配置测试 · 1/2" in self.session.visible)
+        self.assertIn("Esc 保留原配置",self.session.visible)
+        self.session.send(b"\r")
+        self.session.wait(lambda:"选择思考强度 · @配置测试 · 2/2" in self.session.visible and "› high" in self.session.visible)
+        # The inherited high effort is selected, even though the model default is low.
+        self.assertTrue(any("› high" in row for row in self.session.visible.splitlines()))
+        self.session.send(b"\x1b[A\r")
+        self.session.wait(lambda:"已设置 · test-model · low" in self.session.visible)
+        self.command("/model",setup=False)
+        self.session.wait(lambda:"选择模型 ·" in self.session.visible and "Test Model" in self.session.visible)
+        self.click(15,self.row("Test Model"))
+        self.session.wait(lambda:"选择思考强度 ·" in self.session.visible and " high" in self.session.visible)
+        self.click(15,self.row(" high"))
+        self.session.wait(lambda:"已设置 · test-model · high" in self.session.visible)
+        self.command("/add 保留默认",setup=False)
+        self.session.wait(lambda:"选择模型 · @保留默认" in self.session.visible)
+        self.session.send(b"\x1b")
+        self.session.wait(lambda:"选择模型 ·" not in self.session.visible)
+        self.command("/focus 配置测试")
+        self.command("/model",setup=False)
+        self.session.wait(lambda:"选择模型 ·" in self.session.visible)
+        self.session.send(b"\r")
+        self.session.wait(lambda:"选择思考强度 ·" in self.session.visible)
+        self.session.send(b"\x1b[A\x1b")  # Highlight low, then cancel: keep high.
+        self.session.wait(lambda:"选择思考强度 ·" not in self.session.visible)
+        self.finish()
+        state=json.loads((self.cwd/".codex-room/state.json").read_text())
+        for member in state["agents"]:
+            self.assertEqual((member["model"],member["effort"]),("test-model","high"))
+            self.assertIsNone(member["thread_id"])
+        self.assertEqual(state["entries"],[])
+        self.session.close();self.session=None
+        self.start(columns=110,rows=34)
+        self.command("/model",setup=False)
+        self.session.wait(lambda:"选择模型 ·" in self.session.visible)
+        self.session.send(b"\r")
+        self.session.wait(lambda:"› high" in self.session.visible)
+        self.session.send(b"\x1b")
+        self.finish()
 
     def test_markdown_table_columns_reflow_with_sidebar_and_terminal_width(self):
         source = (ROOT/"tests/fixtures/markdown_table.md").read_text()
