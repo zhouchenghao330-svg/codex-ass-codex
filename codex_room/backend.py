@@ -26,6 +26,7 @@ from .member_config import parse_add, resolve_directory, resolve_member, validat
 from .runtime import CodexClient, CodexError, clean_error
 from .storage import RoomStore
 from .models import Entry, ReplyBlock
+from .peer_router import is_public
 from .tool_details import file_changes
 
 
@@ -344,7 +345,12 @@ class Service:
         return True
 
     def enqueue(self, agent, entry):
+        entry.task_id = entry.task_id or (entry.communication["chain_id"] if is_public(entry) else entry.id)
         agent.queue.append(entry)
+        # Peer requests, including replies, always wait for a new turn. They
+        # must not split output or interrupt an unrelated user-authorized turn.
+        if agent.busy and is_public(entry):
+            return
         if agent.busy and agent.name in self.active_entries:
             if not entry.hidden:
                 self.reply_boundaries.add(agent.name)
@@ -364,36 +370,37 @@ class Service:
         agent = self.agents[name]
         async with agent.delivery_lock:
             while agent.queue and name in self.active_entries:
-                request = agent.queue[0]
+                # A queued peer must not prevent the user from intervening.
+                request = next((e for e in agent.queue if not is_public(e)), None)
+                if request is None:
+                    break
                 answer = self.active_entries[name][1]
+                previous_scope = answer.task_id, answer.peer_context
                 try:
                     request.server_turn_id = self.client.active.get(agent.thread_id, "") if self.client else ""
+                    # Input can trigger tools before the steer RPC's ACK. Give
+                    # those calls the new user's scope, not the old peer chain.
+                    answer.task_id, answer.peer_context = request.task_id, ""
                     if self.demo:
                         # The demo loop consumes this list in the same turn.
                         self.demo_followups.setdefault(name, []).append(request.input_text)
                     else:
-                        if request.communication and request.communication.get("transport") == "room":
-                            request.communication["target_thread_id"] = agent.thread_id
-                            self.peers.delivery(request, "delivering")
                         accepted = await self.client.steer_turn(agent.thread_id, request.input_text, images=request.image_paths)
                         if not accepted:
-                            self.peers.delivery(request, "queued")
+                            active = self.active_entries.get(name)
+                            if active and active[1].run_id == answer.run_id and active[1].task_id == request.task_id:
+                                active[1].task_id, active[1].peer_context = previous_scope
                             break
-                        if request.communication and request.communication.get("transport") == "room":
-                            self.peers.steered(name, request)
                 except Exception as exc:
-                    if agent.queue and agent.queue[0] is request:
-                        agent.queue.popleft()
-                    confirmed = request.communication and request.communication.get("delivery") in {"delivered", "steered"}
-                    if not confirmed:
-                        request.state = "failed"
-                        self.peers.delivery(request, "uncertain", clean_error(exc))
-                        self.notify(f"追加未确认：{clean_error(exc)}。未自动重发")
+                    if request in agent.queue:
+                        agent.queue.remove(request)
+                    request.state = "failed"
+                    self.notify(f"追加未确认：{clean_error(exc)}。未自动重发")
                     self.refresh_answer(request)
                     continue
-                if not agent.queue or agent.queue[0] is not request:
+                if request not in agent.queue:
                     break
-                agent.queue.popleft()
+                agent.queue.remove(request)
                 request.state, request.run_id = "steered", answer.run_id
                 self.peers.steered(name, request)
                 self.refresh_answer(request)
@@ -405,7 +412,8 @@ class Service:
             answer.state = "continued"
             self.refresh_answer(answer)
             answer = self.add_entry(Entry(name, "", state="working", started_at=answer.started_at, run_id=answer.run_id,
-                                         hidden=answer.hidden, relay_for=answer.relay_for, peer_context=answer.peer_context))
+                                         hidden=answer.hidden, relay_for=answer.relay_for, peer_context=answer.peer_context,
+                                         task_id=answer.task_id))
             self.active_entries[name] = request, answer
         return answer
 
@@ -420,7 +428,10 @@ class Service:
         try:
             while agent.queue:
                 async with agent.delivery_lock:
-                    request = agent.queue.popleft()
+                    if not agent.queue:
+                        break  # /stop may have cancelled it while we awaited the lock.
+                    request = next((e for e in agent.queue if not is_public(e)), agent.queue[0])
+                    agent.queue.remove(request)
                 request.state = "done"
                 self.peers.delivery(request, "delivering")
                 self.refresh_answer(request)
@@ -428,7 +439,7 @@ class Service:
                 started = monotonic()
                 answer = self.add_entry(Entry(name, "", state="working", started_at=datetime.now().astimezone().isoformat(timespec="seconds"), run_id=uuid4().hex,
                     hidden=request.hidden, relay_for=request.relay_for,
-                    peer_context=request.id if request.communication and request.communication.get("transport") == "room" else ""))
+                    peer_context=request.id if is_public(request) else "", task_id=request.task_id))
                 request.run_id = answer.run_id
                 self.active_entries[name] = request, answer
                 agent.phase = "正在启动会话…"

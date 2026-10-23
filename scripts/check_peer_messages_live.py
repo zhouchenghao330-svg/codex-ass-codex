@@ -61,7 +61,7 @@ async def main():
             assert "ROOM_PUBLIC_CONTEXT" in messages[0].body
             assert "PUBLIC_REPLY_CONFIRMED" in messages[1].body
             assert messages[1].communication["reply_to"] == messages[0].id
-            assert all(e.communication["delivery"] in {"delivered", "steered"} for e in messages)
+            assert all(e.communication["delivery"] == "delivered" for e in messages)
             assert room.agents["A"].thread_id == original.thread_id
             assert room.agents["B"].room_tool_version == 1
             print("PASS old root context + new root dynamic tool, plaintext in both directions", flush=True)
@@ -89,7 +89,7 @@ async def main():
             assert len(counted) == 11, [(e.sender, e.body) for e in counted]
             assert [int(re.search(r"\d+", e.body.splitlines()[0])[0]) for e in counted] == list(range(1, 12)), [e.body for e in counted]
             assert [e.sender for e in counted] == ["A" if n % 2 else "B" for n in range(1, 12)]
-            assert all(e.communication["delivery"] in {"delivered", "steered"} for e in counted)
+            assert all(e.communication["delivery"] == "delivered" for e in counted)
             assert len({e.communication["chain_id"] for e in counted}) == 1
             assert [e.communication["expect_reply"] for e in counted] == [True] * 10 + [False]
             assert {a.name: a.thread_id for a in room.agents.values()} == identities

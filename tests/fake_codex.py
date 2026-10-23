@@ -40,8 +40,10 @@ async def peer_input(thread, turn, text):
     lines = text.splitlines()
     info = json.loads(lines[1])
     if info["expect_reply"]:
-        receipt = await public_call(thread, turn, {"to": info["from"], "message": "**PUBLIC_ANSWER**\n\n完整的公开回复。",
-            "reply_to": info["message_id"], "expect_reply": False})
+        bounce = "BOUNCE_TEST" in text
+        receipt = await public_call(thread, turn, {"to": info["from"],
+            "message": "BOUNCE_TEST" if bounce else "**PUBLIC_ANSWER**\n\n完整的公开回复。",
+            "reply_to": info["message_id"], "expect_reply": bounce})
         return "PEER_REPLIED:" + str(receipt.get("accepted"))
     if threads[thread].get("force_peer_ack"):
         receipt = await public_call(thread, turn, {"to": info["from"], "message": "谢谢",
@@ -66,13 +68,18 @@ def send(message):
 async def finish(thread, turn, text, params):
     global sequence
     try:
-        if text.startswith(("peer-send ", "peer-force-ack ")):
+        if text.startswith(("peer-send ", "peer-send-hold ", "peer-force-ack ", "peer-bounce ")):
             target = text.split(maxsplit=1)[1]
             threads[thread]["force_peer_ack"] = text.startswith("peer-force-ack ")
-            receipt = await public_call(thread, turn, {"to": target, "message": "**PUBLIC_REQUEST**\n\n请给出你的建议。", "expect_reply": True})
+            hold, bounce = text.startswith("peer-send-hold "), text.startswith("peer-bounce ")
+            receipt = await public_call(thread, turn, {"to": target,
+                "message": "BOUNCE_TEST" if bounce else "**PUBLIC_REQUEST**\n\n请给出你的建议。", "expect_reply": True})
             text = "PUBLIC_RECEIPT:" + str(receipt.get("accepted"))
-            # Exercise a reply arriving while the sender is still processing.
-            await asyncio.sleep(.15)
+            if hold:
+                await steer_ready[turn].wait()
+            else:
+                # Exercise a reply arriving while the sender is still processing.
+                await asyncio.sleep(.15)
         elif text.startswith("[Codex Room public peer message;"):
             text = await peer_input(thread, turn, text)
         if text == "continuous-stream":

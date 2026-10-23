@@ -12,7 +12,7 @@ from unittest.mock import Mock, AsyncMock
 from codex_room.attachments import Prompt
 from codex_room.backend import Member, Service
 from codex_room.models import Entry
-from codex_room.peer_router import MAX_MESSAGES, PeerRouter, is_public
+from codex_room.peer_router import MAX_MESSAGES, MAX_PENDING_REMINDERS, PeerRouter, is_public
 from codex_room.peer_tools import SCHEMA
 from codex_room.runtime import CodexError
 
@@ -237,6 +237,49 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertEqual(native.communications.records, {})
         self.assertEqual(self.dispatched[0].state, "queued")
 
+    def test_reply_reminder_survives_restart_and_clears_on_accepted_reply_even_if_uncertain(self):
+        request = self.delivered(self.send(to="B", message="先调研，再回答我的问题"))
+        pending = self.peers.pending_replies(self.room.agents["B"])
+        self.assertEqual(pending["total"], 1)
+        self.assertEqual(pending["requests"][0]["message_id"], request.id)
+        restored = PeerRouter(self.room)
+        self.assertEqual(restored.pending_replies(self.room.agents["B"]), pending)
+        reply = self.send(sender="B", to="A", message="已查明原因", reply_to=request.id, expect_reply=False)
+        self.peers.delivery(self.peers.messages[reply["message_id"]], "uncertain")
+        self.assertEqual(self.peers.pending_replies(self.room.agents["B"])["total"], 0)
+
+    def test_reminders_exclude_queued_false_stopped_and_recreated_members(self):
+        self.send(to="B", message="not delivered yet")
+        self.delivered(self.send(to="B", message="no reply needed", expect_reply=False))
+        self.assertEqual(self.peers.pending_replies(self.room.agents["B"])["total"], 0)
+        request = self.delivered(self.send(to="B", message="question"))
+        self.room.agents["A"].thread_id = "replacement-A"
+        self.assertEqual(self.peers.pending_replies(self.room.agents["B"])["total"], 0)
+        self.room.agents["A"].thread_id = "thread-A"
+        self.room.agents["B"].thread_id = "replacement-B"
+        self.assertEqual(self.peers.pending_replies(self.room.agents["B"])["total"], 0)
+        self.room.agents["B"].thread_id = "thread-B"
+        self.peers.stopped.add(request.communication["chain_id"])
+        self.assertEqual(self.peers.pending_replies(self.room.agents["B"])["total"], 0)
+
+    def test_context_refreshes_identity_permissions_and_bounded_outstanding_requests(self):
+        for number in range(MAX_PENDING_REMINDERS):
+            self.delivered(self.send(to="B", message=f"question {number}: " + "x" * 1000))
+        self.room.client.active["thread-A"] = "next-turn-A"
+        extra = self.peers.send("thread-A", "next-turn-A", "extra", {"to": "B", "message": "one more", "expect_reply": True})
+        self.delivered(extra)
+        self.room.agents["A"].label = "改名后的成员"
+        self.room.agents["B"].label = "笔记"
+        self.room.agents["B"].permission = "read-only"
+        context = self.peers.context("thread-B")
+        self.assertIn("@笔记 (stable name B)", context)
+        self.assertIn("mode=read-only", context)
+        self.assertIn("改名后的成员", context)
+        pending = self.peers.pending_replies(self.room.agents["B"])
+        self.assertEqual(pending["total"], MAX_PENDING_REMINDERS + 1)
+        self.assertEqual(len(pending["requests"]), MAX_PENDING_REMINDERS)
+        self.assertTrue(all(len(p["excerpt"]) <= 240 for p in pending["requests"]))
+
 
 class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -263,7 +306,7 @@ class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
         public = [e for e in self.room.entries if is_public(e)]
         self.assertEqual([(e.sender, e.target) for e in public], [("A", "B"), ("B", "A")])
-        self.assertTrue(all(e.communication["delivery"] in {"delivered", "steered"} for e in public))
+        self.assertTrue(all(e.communication["delivery"] == "delivered" for e in public))
         self.assertEqual(public[1].communication["reply_to"], public[0].id)
         self.assertIn("PUBLIC_ANSWER", public[1].body)
         self.assertEqual(self.room.selected, "A")
@@ -272,16 +315,65 @@ class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(self.room.agents["A"].thread_id, self.room.agents["B"].thread_id)
         self.assertTrue(all(a.room_tool_version == 1 for a in self.room.agents.values()))
 
-    async def test_busy_peer_uses_same_turn_steer(self):
+    async def test_busy_peer_queues_while_user_steers_past_it_then_peer_starts_new_turn(self):
+        requests = AsyncMock(wraps=self.room.client.request)
+        self.room.client.request = requests
         await self.room.submit(Prompt("@B steer-hold"))
         await self.until(lambda: bool(self.room.client.active))
         original = self.room.client.active[self.room.agents["B"].thread_id]
         await self.room.submit(Prompt("@A peer-send B"))
+        await self.until(lambda: not self.room.agents["A"].busy)
+        public = [e for e in self.room.entries if is_public(e)]
+        self.assertEqual(len(public), 1)
+        self.assertEqual(public[0].communication["delivery"], "queued")
+        self.assertEqual(self.room.client.active[self.room.agents["B"].thread_id], original)
+        self.assertNotIn("B", self.room.reply_boundaries)
+        self.assertFalse(any(call.args[0] == "turn/steer" for call in requests.call_args_list))
+        await self.room.submit(Prompt("@B USER_FOLLOWUP"))
+        user = self.room.entries[-1]
+        await self.until(lambda: user.state == "steered")
+        self.assertEqual(user.server_turn_id, original)
+        self.assertEqual(list(self.room.agents["B"].queue), public)
+        await self.room.submit(Prompt("@B finish-steer"))
         await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
         public = [e for e in self.room.entries if is_public(e)]
         self.assertEqual(len(public), 2)
-        self.assertEqual(public[0].communication["delivery"], "steered")
-        self.assertEqual(public[0].server_turn_id, original)
+        self.assertTrue(all(e.communication["delivery"] == "delivered" for e in public))
+        self.assertNotEqual(public[0].server_turn_id, original)
+        steers = [call for call in requests.call_args_list if call.args[0] == "turn/steer"]
+        self.assertEqual(len(steers), 2)
+        self.assertTrue(all(not any("[Codex Room public peer message;" in item.get("text", "")
+                          for item in call.args[1]["input"]) for call in steers))
+
+    async def test_busy_sender_also_queues_peer_reply(self):
+        await self.room.submit(Prompt("@A peer-send-hold B"))
+        await self.until(lambda: len(self.room.peers.messages) == 2)
+        reply = list(self.room.peers.messages.values())[-1]
+        original = self.room.client.active[self.room.agents["A"].thread_id]
+        self.assertEqual(reply.communication["delivery"], "queued")
+        self.assertEqual(list(self.room.agents["A"].queue), [reply])
+        await self.room.submit(Prompt("@A finish-steer"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        self.assertEqual(reply.communication["delivery"], "delivered")
+        self.assertNotEqual(reply.server_turn_id, original)
+
+    async def test_user_still_precedes_queued_peer_when_old_turn_ends_before_steer(self):
+        requests = AsyncMock(wraps=self.room.client.request)
+        self.room.client.request = requests
+        await self.room.submit(Prompt("@B steer-hold"))
+        await self.until(lambda: bool(self.room.client.active))
+        thread = self.room.agents["B"].thread_id
+        await self.room.submit(Prompt("@A peer-send B"))
+        await self.until(lambda: not self.room.agents["A"].busy)
+        await self.room.submit(Prompt("@B race-to-next"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        starts = [call.args[1] for call in requests.call_args_list
+                  if call.args[0] == "turn/start" and call.args[1]["threadId"] == thread]
+        tasks = [params["input"][-1]["text"] for params in starts]
+        self.assertEqual(len(tasks), 3)
+        self.assertEqual(tasks[:2], ["steer-hold", "race-to-next"])
+        self.assertTrue(tasks[2].startswith("[Codex Room public peer message;"))
+        self.assertEqual(len(self.room.peers.messages), 2)
 
     async def test_actual_tool_call_that_ignores_false_gets_error_without_delivering(self):
         await self.room.submit(Prompt("@A peer-force-ack B"))
@@ -293,17 +385,88 @@ class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(b.kind == "tool" and b.status == "failed" for e in self.room.entries for b in e.blocks))
         self.assertFalse(any(member.queue for member in self.room.agents.values()))
 
-    async def test_uncertain_steer_is_not_queued_for_retry(self):
+    async def test_uncertain_user_steer_is_not_retried_or_discarding_queued_peer(self):
         await self.room.submit(Prompt("@B slow"))
         await self.until(lambda: bool(self.room.client.active))
         self.room.client.steer_turn = AsyncMock(side_effect=CodexError("timeout after possible delivery"))
         await self.room.submit(Prompt("@A peer-send B"))
-        await self.until(lambda: any(is_public(e) and e.communication["delivery"] == "uncertain" for e in self.room.entries))
         await self.until(lambda: not self.room.agents["A"].busy)
-        self.assertFalse(self.room.agents["B"].queue)
+        self.room.client.steer_turn.assert_not_awaited()
+        await self.room.submit(Prompt("@B USER_FOLLOWUP"))
+        user = self.room.entries[-1]
+        await self.until(lambda: user.state == "failed")
+        queued = list(self.room.agents["B"].queue)
+        self.assertEqual(len(queued), 1)
+        self.assertTrue(is_public(queued[0]))
+        self.assertEqual(queued[0].communication["delivery"], "queued")
         self.assertEqual(self.room.client.steer_turn.await_count, 1)
         await self.room.stop("B")
         self.assertEqual(len([e for e in self.room.entries if is_public(e)]), 1)
+
+    async def test_endless_peer_requests_are_stopped_at_chain_budget_without_model_cooperation(self):
+        await self.room.submit(Prompt("@A peer-bounce B"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        messages = list(self.room.peers.messages.values())
+        self.assertEqual(len(messages), MAX_MESSAGES)
+        self.assertEqual(len({e.task_id for e in messages}), 1)
+        self.assertTrue(all(e.communication["expect_reply"] for e in messages))
+        self.assertTrue(any(b.status == "failed" and "limit" in b.text
+                            for e in self.room.entries for b in e.blocks))
+        self.assertFalse(any(member.queue for member in self.room.agents.values()))
+        self.assertTrue(all(self.room.peers.pending_replies(member)["total"] == 0
+                            for member in self.room.agents.values()))
+
+    async def test_stop_removes_queued_peer_request_without_waking_recipient(self):
+        await self.room.submit(Prompt("@B steer-hold"))
+        await self.until(lambda: bool(self.room.client.active))
+        original = self.room.client.active[self.room.agents["B"].thread_id]
+        await self.room.submit(Prompt("@A peer-send B"))
+        await self.until(lambda: not self.room.agents["A"].busy)
+        message = next(iter(self.room.peers.messages.values()))
+        await self.room.stop("A")
+        self.assertEqual(message.communication["delivery"], "stopped")
+        self.assertFalse(self.room.agents["B"].queue)
+        self.assertEqual(self.room.client.active[self.room.agents["B"].thread_id], original)
+        await self.room.submit(Prompt("@B finish-steer"))
+        await self.until(lambda: not self.room.agents["B"].busy)
+        self.assertEqual(len(self.room.peers.messages), 1)
+
+    async def test_new_user_input_separates_chain_before_steer_ack_and_old_stop(self):
+        await self.room.command("/add C")
+        for name, text in (("A", "slow"), ("C", "slow"), ("B", "steer-hold")):
+            await self.room.submit(Prompt(f"@{name} {text}"))
+        await self.until(lambda: len(self.room.client.active) == 3)
+        thread = self.room.agents["B"].thread_id
+        turn = self.room.client.active[thread]
+        old = self.room.peers.send(thread, turn, "old-task", {"to": "A", "message": "old request", "expect_reply": True})
+        old_chain = self.room.peers.messages[old["message_id"]].communication["chain_id"]
+        accepted, release = asyncio.Event(), asyncio.Event()
+        original = self.room.client.steer_turn
+        async def late_ack(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            accepted.set()
+            await release.wait()
+            return result
+        self.room.client.steer_turn = late_ack
+        try:
+            await self.room.submit(Prompt("@B independent-user-task"))
+            user = self.room.entries[-1]
+            await asyncio.wait_for(accepted.wait(), 2)
+            self.assertEqual(user.state, "queued")  # ACK is still pending.
+            receipt = self.room.peers.send(thread, turn, "new-task", {"to": "C", "message": "new request", "expect_reply": True})
+            self.assertTrue(receipt["accepted"], receipt)
+            new = self.room.peers.messages[receipt["message_id"]]
+            self.assertEqual(new.communication["chain_id"], user.id)
+            self.assertNotEqual(new.communication["chain_id"], old_chain)
+        finally:
+            release.set()
+        await self.until(lambda: user.state == "steered")
+        self.assertEqual(user.server_turn_id, turn)
+        await self.room.stop("A")
+        self.assertIn(old_chain, self.room.peers.stopped)
+        self.assertNotIn(new.communication["chain_id"], self.room.peers.stopped)
+        self.assertEqual(new.communication["delivery"], "queued")
+        self.assertIn(new, self.room.agents["C"].queue)
 
     async def test_state_restores_original_roots_and_receipts_without_auto_work(self):
         await self.room.submit(Prompt("@A peer-send B"))
