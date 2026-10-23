@@ -85,7 +85,7 @@ def _fetch(url: str, destination: Path, limit: int) -> None:
     with urlopen(request, timeout=30) as response, destination.open("wb") as output:
         size = 0
         deadline = time.monotonic() + 180
-        while chunk := response.read(128 * 1024):
+        while chunk := response.read1(128 * 1024):
             size += len(chunk)
             if size > limit or time.monotonic() > deadline:
                 raise DownloadError("下载超过大小或时间限制，请检查网络后重试。")

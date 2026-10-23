@@ -55,8 +55,11 @@ class RustUITests(unittest.TestCase):
             self.session.send(b"\r") # Enter first accepted an exact completion.
         self.session.wait(lambda:text not in "\n".join(self.session.visible.splitlines()[-3:]) and "正在确认发送" not in self.session.visible)
         if setup and text.startswith("/add "):
-            self.session.wait(lambda:"选择模型 ·" in self.session.visible)
-            self.session.send(b"\r")
+            # The completion-accepting Enter above may already have confirmed
+            # step 1 if the backend created the member before the next redraw.
+            self.session.wait(lambda:"选择模型 ·" in self.session.visible or "选择思考强度 ·" in self.session.visible)
+            if "选择模型 ·" in self.session.visible:
+                self.session.send(b"\r")
             self.session.wait(lambda:"选择思考强度 ·" in self.session.visible)
             self.session.send(b"\r")
             self.session.wait(lambda:"已设置 ·" in self.session.visible and "选择思考强度 ·" not in self.session.visible)

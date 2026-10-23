@@ -39,6 +39,6 @@
 4. 全部成功后汇集六个程序，核对资产集合、生成 `SHA256SUMS`，上传为 draft，完成后才公开发布。不含本地房间、聊天、登录配置或虚拟环境。
 5. 使用空缓存运行 `uv run codex_room --help`，再断网重复验证缓存。完整 UI 可用 `--demo` 在 PTY 验证，不操作真实房间。
 
-Workflow 中的 release notes 路径要与新版本一起更新。已公开的版本不覆盖程序；更改时增加版本并创建新 tag。平台失败不会发布缺件版本。上传失败后，先检查并清理同一 tag 未完成的 draft 再重跑，不覆盖已公开资产。
+Release notes 按 tag 自动选择。已公开的版本不覆盖程序；更改时增加版本并创建新 tag。平台失败不会发布缺件版本。上传失败后，先检查并清理同一 tag 未完成的 draft 再重跑，不覆盖已公开资产。
 
 Runner 标签参考 [GitHub 官方 runner 列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)，Actions 引用固定 commit。各平台构建及帮助检查不等同完整人工交互验收。
