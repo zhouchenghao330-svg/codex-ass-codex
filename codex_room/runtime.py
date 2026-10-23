@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from .platform_support import codex_command
+from .peer_tools import TOOL_VERSION
 
 
 class CodexError(RuntimeError):
@@ -221,7 +222,7 @@ class CodexClient:
         agent.legacy_instructions = False
         agent.thread_id = result["thread"]["id"]
         if new_thread and params.get("dynamicTools"):
-            agent.room_tool_version = 1
+            agent.room_tool_version = TOOL_VERSION
         self.loaded.add(agent.thread_id)
         if not agent.model:
             agent.model = result.get("model", "")

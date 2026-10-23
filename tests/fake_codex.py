@@ -19,17 +19,17 @@ def input_text(params):
                      if item["type"] == "text" and not item["text"].startswith("[Codex Room host context;"))
 
 
-async def public_call(thread, turn, arguments):
+async def public_call(thread, turn, arguments, tool="send_message"):
     global sequence
     sequence += 1
     rid = f"public-{sequence}"
     future = asyncio.get_running_loop().create_future()
     requests[rid] = future
-    item = {"id": rid, "type": "dynamicToolCall", "namespace": "room", "tool": "send_message",
+    item = {"id": rid, "type": "dynamicToolCall", "namespace": "room", "tool": tool,
             "arguments": arguments, "status": "inProgress"}
     send({"method": "item/started", "params": {"threadId": thread, "turnId": turn, "item": item}})
     send({"id": rid, "method": "item/tool/call", "params": {"threadId": thread, "turnId": turn,
-          "callId": rid, "namespace": "room", "tool": "send_message", "arguments": arguments}})
+          "callId": rid, "namespace": "room", "tool": tool, "arguments": arguments}})
     result = await future
     send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn,
           "item": {**item, **result, "status": "completed" if result.get("success") else "failed"}}})
@@ -65,21 +65,39 @@ def send(message):
     print(json.dumps(message), flush=True)
 
 
+async def late_steer_ack(turn, request_id):
+    # Keep reading responses to tool requests while withholding this RPC ACK.
+    await turns[turn]
+    await asyncio.sleep(.05)
+    send({"id": request_id, "result": {"turnId": turn}})
+
+
 async def finish(thread, turn, text, params):
     global sequence
     try:
-        if text.startswith(("peer-send ", "peer-send-hold ", "peer-force-ack ", "peer-bounce ")):
+        if text.startswith(("peer-send ", "peer-send-hold ", "peer-force-ack ", "peer-bounce ",
+                            "peer-steer ", "peer-steer-race ", "peer-steer-late-ack ")):
             target = text.split(maxsplit=1)[1]
             threads[thread]["force_peer_ack"] = text.startswith("peer-force-ack ")
             hold, bounce = text.startswith("peer-send-hold "), text.startswith("peer-bounce ")
-            receipt = await public_call(thread, turn, {"to": target,
-                "message": "BOUNCE_TEST" if bounce else "**PUBLIC_REQUEST**\n\n请给出你的建议。", "expect_reply": True})
+            payload = {"to": target, "message": "BOUNCE_TEST" if bounce else "**PUBLIC_REQUEST**\n\n请给出你的建议。", "expect_reply": True}
+            if text.startswith("peer-steer"):
+                payload["delivery_mode"] = "steer"
+                if text.startswith("peer-steer-race "):
+                    payload["message"] += "\nEND_BEFORE_PEER_STEER"
+                elif text.startswith("peer-steer-late-ack "):
+                    payload["message"] += "\nLATE_PEER_STEER_ACK"
+            receipt = await public_call(thread, turn, payload)
             text = "PUBLIC_RECEIPT:" + str(receipt.get("accepted"))
             if hold:
                 await steer_ready[turn].wait()
             else:
                 # Exercise a reply arriving while the sender is still processing.
                 await asyncio.sleep(.15)
+        elif text.startswith("list-members"):
+            member = text.split(maxsplit=1)[1] if " " in text else None
+            result = await public_call(thread, turn, {"member": member} if member else {}, tool="list_members")
+            text = "MEMBER_DISCOVERY:" + json.dumps(result, ensure_ascii=False)
         elif text.startswith("[Codex Room public peer message;"):
             text = await peer_input(thread, turn, text)
         if text == "continuous-stream":
@@ -258,7 +276,7 @@ async def main():
             if text == "reject-steer":
                 send({"id": message["id"], "error": {"code": -32602, "message": "steering rejected by fixture"}})
                 continue
-            if text == "race-to-next" and turn and not turns[turn].done():
+            if (text == "race-to-next" or "END_BEFORE_PEER_STEER" in text) and turn and not turns[turn].done():
                 turns[turn].cancel()
                 await turns[turn]
             if not turn or turns[turn].done():
@@ -270,6 +288,9 @@ async def main():
             steering[turn].append(text)
             if text in {"finish-steer", "finish-and-ack"} or text.startswith("[Codex Room public peer message;"):
                 steer_ready[turn].set()
+            if "LATE_PEER_STEER_ACK" in text:
+                asyncio.create_task(late_steer_ack(turn, message["id"]))
+                continue
             if text == "finish-and-ack":
                 await turns[turn]
                 await asyncio.sleep(0.05)

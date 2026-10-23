@@ -13,7 +13,7 @@ from codex_room.attachments import Prompt
 from codex_room.backend import Member, Service
 from codex_room.models import Entry
 from codex_room.peer_router import MAX_MESSAGES, MAX_PENDING_REMINDERS, PeerRouter, is_public
-from codex_room.peer_tools import SCHEMA
+from codex_room.peer_tools import SCHEMA, TOOL_VERSION
 from codex_room.runtime import CodexError
 
 FAKE = Path(__file__).with_name("fake_codex.py")
@@ -78,6 +78,34 @@ class PeerRoutingTests(unittest.TestCase):
             self.assertIn("There is no default", result["error"])
         self.assertEqual(self.dispatched, [])
         self.assertFalse(self.peers.messages)
+
+    def test_delivery_mode_defaults_to_queue_and_explicit_steer_is_recorded(self):
+        queued = self.send(to="B", message="new help")
+        self.assertEqual(queued["delivery_mode"], "queue")
+        receipt = self.send(to="C", message="current correction", delivery_mode="steer")
+        self.assertTrue(receipt["accepted"])
+        self.assertEqual(receipt["delivery_mode"], "steer")
+        self.assertEqual(self.peers.messages[receipt["message_id"]].communication["delivery_mode"], "steer")
+        for mode in (None, True, "immediate", []):
+            self.assertFalse(self.send(to="B", message="invalid", delivery_mode=mode)["accepted"])
+
+    def test_steer_cannot_bypass_false_after_another_peer_message_in_same_user_scope(self):
+        old = self.delivered(self.send(to="B", message="earlier question"))
+        final = self.delivered(self.send(to="B", message="finished", expect_reply=False))
+        final.communication["recipient_scope"] = "B-user-task"
+        other = self.delivered(self.send(sender="C", to="B", message="another peer", expect_reply=True))
+        answer = self.room.active_entries["B"][1]
+        answer.task_id, answer.peer_context = "B-user-task", other.id
+        for reply_to in (final.id, old.id, None):
+            result = self.send(sender="B", to="A", message="thanks", reply_to=reply_to, delivery_mode="steer")
+            self.assertFalse(result["accepted"], result)
+            self.assertIn("expect_reply=false", result["error"])
+        # An old queued true request can start a later turn after false has
+        # already arrived via steer. It still cannot reopen that same chain.
+        answer.task_id, answer.peer_context = old.communication["chain_id"], old.id
+        self.assertFalse(self.send(sender="B", to="A", message="late old reply", reply_to=old.id)["accepted"])
+        answer.task_id, answer.peer_context = "new-user-input", ""
+        self.assertTrue(self.send(sender="B", to="A", message="new task", delivery_mode="steer")["accepted"])
 
     def test_reply_ownership_and_false_block_before_creating_or_dispatching_message(self):
         request = self.delivered(self.send(to="B", message="问题"))
@@ -201,6 +229,18 @@ class PeerRoutingTests(unittest.TestCase):
         self.peers.stop_member("A")
         self.assertIn(entry.communication["chain_id"], self.peers.stopped)
 
+    def test_shutdown_keeps_all_peer_chains_in_an_active_mixed_turn_stopped(self):
+        first = self.delivered(self.send(to="B", message="first request", delivery_mode="steer"))
+        second = self.delivered(self.send(sender="C", to="B", message="second request", delivery_mode="steer"))
+        answer = self.room.active_entries["B"][1]
+        first.run_id = second.run_id = answer.run_id
+        answer.peer_context = second.id
+        self.room.active_entries = {"B": self.room.active_entries["B"]}
+        self.room.client.active = {"thread-B": "turn-B"}
+        self.room.closing = True
+        self.peers.stop_member("A")
+        self.assertIn(first.communication["chain_id"], self.peers.stopped)
+
     def test_save_failure_is_not_acknowledged_or_retried(self):
         self.room.save = Mock(side_effect=OSError("disk full"))
         args = {"to": "B", "message": "not persisted", "expect_reply": True}
@@ -313,7 +353,7 @@ class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.room.drafts["B"]["prompt"], "my unfinished text")
         self.assertEqual(len([e for e in self.room.entries if e.sender == "you"]), 1)
         self.assertNotEqual(self.room.agents["A"].thread_id, self.room.agents["B"].thread_id)
-        self.assertTrue(all(a.room_tool_version == 1 for a in self.room.agents.values()))
+        self.assertTrue(all(a.room_tool_version == TOOL_VERSION for a in self.room.agents.values()))
 
     async def test_busy_peer_queues_while_user_steers_past_it_then_peer_starts_new_turn(self):
         requests = AsyncMock(wraps=self.room.client.request)
@@ -356,6 +396,85 @@ class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
         self.assertEqual(reply.communication["delivery"], "delivered")
         self.assertNotEqual(reply.server_turn_id, original)
+
+    async def test_explicit_peer_steer_reaches_busy_peer_in_same_turn(self):
+        await self.room.submit(Prompt("@B steer-hold"))
+        await self.until(lambda: bool(self.room.client.active))
+        original = self.room.client.active[self.room.agents["B"].thread_id]
+        await self.room.submit(Prompt("@A peer-steer B"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        request, reply = list(self.room.peers.messages.values())
+        self.assertEqual((request.communication["delivery_mode"], request.communication["delivery"]), ("steer", "steered"))
+        self.assertEqual(request.server_turn_id, original)
+        self.assertEqual(reply.communication["reply_to"], request.id)
+        self.assertFalse(reply.communication["expect_reply"])
+
+    async def test_user_steers_before_peer_steer_and_queued_peer_does_not_block_either(self):
+        await self.room.command("/add C")
+        requests = AsyncMock(wraps=self.room.client.request)
+        self.room.client.request = requests
+        await self.room.submit(Prompt("@B steer-hold"))
+        await self.until(lambda: bool(self.room.client.active))
+        await self.room.submit(Prompt("@A peer-send B"))
+        await self.until(lambda: not self.room.agents["A"].busy)
+        async with self.room.agents["B"].delivery_lock:
+            await self.room.submit(Prompt("@C peer-steer B"))
+            await self.until(lambda: len(self.room.peers.messages) == 2)
+            await self.room.submit(Prompt("@B USER_PRIORITY"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        steers = [call.args[1]["input"][-1]["text"] for call in requests.call_args_list if call.args[0] == "turn/steer"]
+        self.assertEqual(steers[0], "USER_PRIORITY")
+        self.assertTrue(steers[1].startswith("[Codex Room public peer message;"))
+        first = next(iter(self.room.peers.messages.values()))
+        self.assertEqual(first.communication["delivery_mode"], "queue")
+        self.assertEqual(first.communication["delivery"], "delivered")
+
+    async def test_peer_steer_falls_back_to_one_new_turn_after_definite_completion(self):
+        await self.room.submit(Prompt("@B steer-hold"))
+        await self.until(lambda: bool(self.room.client.active))
+        original = self.room.client.active[self.room.agents["B"].thread_id]
+        await self.room.submit(Prompt("@A peer-steer-race B"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        messages = list(self.room.peers.messages.values())
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0].communication["delivery"], "delivered")
+        self.assertNotEqual(messages[0].server_turn_id, original)
+
+    async def test_peer_reply_before_late_steer_ack_is_not_resent_or_attached_to_new_turn(self):
+        await self.room.submit(Prompt("@B steer-hold"))
+        await self.until(lambda: bool(self.room.client.active))
+        original = self.room.client.active[self.room.agents["B"].thread_id]
+        await self.room.submit(Prompt("@A peer-steer-late-ack B"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        request, reply = list(self.room.peers.messages.values())
+        self.assertEqual(request.communication["delivery"], "steered")
+        self.assertEqual(request.server_turn_id, original)
+        self.assertEqual(reply.communication["reply_to"], request.id)
+
+    async def test_uncertain_peer_steer_is_not_retried(self):
+        await self.room.submit(Prompt("@B slow"))
+        await self.until(lambda: bool(self.room.client.active))
+        self.room.client.steer_turn = AsyncMock(side_effect=CodexError("timeout after possible delivery"))
+        await self.room.submit(Prompt("@A peer-steer B"))
+        await self.until(lambda: not self.room.agents["A"].busy)
+        public = next(iter(self.room.peers.messages.values()))
+        self.assertEqual(public.communication["delivery"], "uncertain")
+        self.assertFalse(self.room.agents["B"].queue)
+        self.assertEqual(self.room.client.steer_turn.await_count, 1)
+        await self.room.stop("B")
+
+    async def test_list_members_tool_returns_actual_recent_dialogue_without_public_delivery(self):
+        await self.room.submit(Prompt("@B DISCOVERY_QUESTION"))
+        await self.until(lambda: not self.room.agents["B"].busy)
+        await self.room.submit(Prompt("@A list-members B"))
+        await self.until(lambda: not self.room.agents["A"].busy)
+        body = next(e.body for e in reversed(self.room.entries) if e.sender == "A")
+        self.assertIn("MEMBER_DISCOVERY:", body)
+        result = json.loads(body.split("MEMBER_DISCOVERY:", 1)[1])
+        dialogue = result["members"][0]["recent_dialogue"][0]
+        self.assertEqual(dialogue["user"]["text"], "DISCOVERY_QUESTION")
+        self.assertIn("DISCOVERY_QUESTION", dialogue["codex_preview"]["text"])
+        self.assertFalse(self.room.peers.messages)
 
     async def test_user_still_precedes_queued_peer_when_old_turn_ends_before_steer(self):
         requests = AsyncMock(wraps=self.room.client.request)

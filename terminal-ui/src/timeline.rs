@@ -192,6 +192,14 @@ impl Timeline {
                         target.map(|m| color(string(m, "color"))).unwrap_or(MUTED),
                     ),
                     Span::styled(
+                        match string(info, "delivery_mode") {
+                            "queue" => " · Queue",
+                            "steer" => " · Steer",
+                            _ => "",
+                        },
+                        MUTED,
+                    ),
+                    Span::styled(
                         format!(
                             " · {} · {}{}",
                             string(info, "action"),

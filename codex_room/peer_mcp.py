@@ -16,7 +16,7 @@ import sys
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from codex_room.peer_tools import mcp_tool
+from codex_room.peer_tools import mcp_tools
 
 LIMIT = 2 * 1024 * 1024
 
@@ -89,12 +89,12 @@ def main():
                 continue
             if method == "initialize":
                 result = {"protocolVersion": params.get("protocolVersion", "2024-11-05"),
-                          "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-room-public", "version": "1.0"}}
+                          "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-room-public", "version": "2.0"}}
             elif method == "tools/list":
-                result = {"tools": [mcp_tool()]}
+                result = {"tools": mcp_tools()}
             elif method == "ping":
                 result = {}
-            elif method == "tools/call" and params.get("name") == "send_message":
+            elif method == "tools/call" and params.get("name") in {"send_message", "list_members"}:
                 try:
                     receipt = call_room(params)
                 except (OSError, ValueError, KeyError):

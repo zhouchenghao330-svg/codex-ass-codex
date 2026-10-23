@@ -198,6 +198,7 @@ class RustUITests(unittest.TestCase):
         self.assertNotIn("**PUBLIC_ANSWER**", self.session.visible)
         self.assertNotIn("Codex 未提供这条通信的正文", self.session.visible)
         self.assertIn("已送达", self.session.visible)
+        self.assertIn("Queue", self.session.visible)
         row = self.row("@A → @B")
         self.click(4, row)
         self.session.wait(lambda:"请给出你的建议" not in self.session.visible)
@@ -212,6 +213,7 @@ class RustUITests(unittest.TestCase):
         public = [e for e in state["entries"] if (e.get("communication") or {}).get("transport") == "room"]
         self.assertEqual([(e["sender"],e["target"]) for e in public], [("A","B"),("B","A")])
         self.assertEqual(public[1]["communication"]["reply_to"], public[0]["id"])
+        self.assertEqual(public[0]["communication"]["delivery_mode"], "queue")
         self.assertEqual(len([e for e in state["entries"] if e["sender"] == "you"]), 1)
         self.session.close(); self.session = None
         self.start(columns=125, rows=42)
@@ -220,6 +222,20 @@ class RustUITests(unittest.TestCase):
         restored = json.loads((self.cwd/".codex-room/state.json").read_text())
         self.assertEqual({e["id"] for e in restored["entries"] if (e.get("communication") or {}).get("transport") == "room"},
                          {e["id"] for e in public})
+
+    def test_member_discovery_shows_recent_user_question_without_sending_peer_messages(self):
+        self.start(columns=125, rows=42)
+        self.command("/add A", finish="@A")
+        self.command("/add B", finish="@B")
+        self.command("@B DISCOVERY_CONTEXT", finish="DISCOVERY_CONTEXT")
+        self.command("@A list-members B", finish="MEMBER_DISCOVERY:")
+        self.session.wait(lambda:"recent_dialogue" in self.session.visible)
+        self.finish()
+        state = json.loads((self.cwd/".codex-room/state.json").read_text())
+        self.assertFalse(any((e.get("communication") or {}).get("transport") == "room" for e in state["entries"]))
+        answer = next(e for e in reversed(state["entries"]) if e["sender"] == "A")
+        result = json.loads(answer["body"].split("MEMBER_DISCOVERY:", 1)[1])
+        self.assertEqual(result["members"][0]["recent_dialogue"][0]["user"]["text"], "DISCOVERY_CONTEXT")
 
     def test_native_child_original_output_multiround_and_restart(self):
         os.environ["CODEX_ROOM_CODEX_COMMAND"] = json.dumps([str(ROOT/".venv/bin/python"), str(ROOT/"tests/fake_native_codex.py")])

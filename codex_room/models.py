@@ -64,7 +64,7 @@ class Entry:
                       "reply_to": info.get("reply_to"), "expect_reply": info["expect_reply"]}
             import json
             instruction = ("Do the necessary reading, research or analysis first, then send your substantive answer "
-                "using room.send_message (old sessions: codex_room_public/send_message), to the sender, "
+                "using the Room send_message tool specified in the current host context, to the sender, "
                 "reply_to this message_id, before finishing your handling of this request. "
                 "expect_reply=true is not an immediate acknowledgement or a deadline. "
                 "Always explicitly set expect_reply: true when the peer must continue "

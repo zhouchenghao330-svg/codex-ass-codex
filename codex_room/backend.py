@@ -347,9 +347,9 @@ class Service:
     def enqueue(self, agent, entry):
         entry.task_id = entry.task_id or (entry.communication["chain_id"] if is_public(entry) else entry.id)
         agent.queue.append(entry)
-        # Peer requests, including replies, always wait for a new turn. They
-        # must not split output or interrupt an unrelated user-authorized turn.
-        if agent.busy and is_public(entry):
+        # Default peer work waits for a new turn; only an explicit steer may
+        # append it to current work. User input always retains priority.
+        if agent.busy and is_public(entry) and entry.communication.get("delivery_mode", "queue") != "steer":
             return
         if agent.busy and agent.name in self.active_entries:
             if not entry.hidden:
@@ -373,14 +373,23 @@ class Service:
                 # A queued peer must not prevent the user from intervening.
                 request = next((e for e in agent.queue if not is_public(e)), None)
                 if request is None:
+                    request = next((e for e in agent.queue if e.communication.get("delivery_mode") == "steer"), None)
+                if request is None:
                     break
                 answer = self.active_entries[name][1]
                 previous_scope = answer.task_id, answer.peer_context
                 try:
                     request.server_turn_id = self.client.active.get(agent.thread_id, "") if self.client else ""
-                    # Input can trigger tools before the steer RPC's ACK. Give
-                    # those calls the new user's scope, not the old peer chain.
-                    answer.task_id, answer.peer_context = request.task_id, ""
+                    # A tool can run before the steer RPC ACK. Establish input
+                    # provenance now, and roll it back on definite rejection.
+                    if is_public(request):
+                        request.communication["target_thread_id"] = agent.thread_id
+                        request.communication["recipient_scope"] = answer.task_id
+                        answer.peer_context = request.id
+                        self.peers.delivery(request, "delivering")
+                    else:
+                        answer.task_id, answer.peer_context = request.task_id, ""
+                    attempted_scope = answer.task_id, answer.peer_context
                     if self.demo:
                         # The demo loop consumes this list in the same turn.
                         self.demo_followups.setdefault(name, []).append(request.input_text)
@@ -388,14 +397,19 @@ class Service:
                         accepted = await self.client.steer_turn(agent.thread_id, request.input_text, images=request.image_paths)
                         if not accepted:
                             active = self.active_entries.get(name)
-                            if active and active[1].run_id == answer.run_id and active[1].task_id == request.task_id:
+                            if (active and active[1].run_id == answer.run_id
+                                    and (active[1].task_id, active[1].peer_context) == attempted_scope):
                                 active[1].task_id, active[1].peer_context = previous_scope
+                            self.peers.delivery(request, "queued")
                             break
                 except Exception as exc:
                     if request in agent.queue:
                         agent.queue.remove(request)
-                    request.state = "failed"
-                    self.notify(f"追加未确认：{clean_error(exc)}。未自动重发")
+                    confirmed = is_public(request) and request.communication.get("delivery") in {"delivered", "steered"}
+                    if not confirmed:
+                        request.state = "failed"
+                        self.peers.delivery(request, "uncertain", clean_error(exc))
+                        self.notify(f"追加未确认：{clean_error(exc)}。未自动重发")
                     self.refresh_answer(request)
                     continue
                 if request not in agent.queue:
@@ -663,8 +677,8 @@ class Service:
         if method == "item/tool/call":
             params = event.get("params", {})
             member = self.agents.get(name)
-            if (params.get("namespace"), params.get("tool")) == ("room", "send_message") and member and member.thread_id == params.get("threadId"):
-                receipt = self.peers.send(params.get("threadId"), params.get("turnId"), params.get("callId"), params.get("arguments"))
+            if params.get("namespace") == "room" and member and member.thread_id == params.get("threadId"):
+                receipt = self.peers.call(params.get("tool"), params.get("threadId"), params.get("turnId"), params.get("callId"), params.get("arguments"))
             else:
                 receipt = self.peers.error("Unknown Room tool or issuing member.")
             await self.client.respond(event["id"], {"success": receipt.get("accepted", False),
