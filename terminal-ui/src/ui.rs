@@ -1,4 +1,5 @@
 use super::*;
+use ratatui::style::Modifier;
 
 impl App {
     pub(super) fn draw(&mut self, f: &mut Frame) {
@@ -116,7 +117,7 @@ impl App {
             let rail = if sender == "you" || sender == "system" {
                 "  "
             } else {
-                "│ "
+                "▎ "
             };
             f.render_widget(
                 Line::styled(rail, color(string(member, "color"))),
@@ -352,15 +353,26 @@ impl App {
                 .enumerate()
             {
                 let at = top + i;
-                let line = Line::styled(
-                    format!(
-                        "{} {}  {}",
-                        if at == self.candidate { "›" } else { " " },
-                        string(c, "value"),
-                        string(c, "detail")
+                let selected = at == self.candidate;
+                let member = self.members.iter().find(|m| {
+                    !string(c, "member").is_empty() && string(m, "name") == string(c, "member")
+                });
+                let name_color = member
+                    .map(|m| color(string(m, "color")))
+                    .unwrap_or(if selected { ACCENT } else { FG });
+                let name_style = if selected {
+                    Style::default().fg(name_color).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(name_color)
+                };
+                let line = Line::from(vec![
+                    Span::styled(
+                        if selected { "› " } else { "  " },
+                        if selected { ACCENT } else { MUTED },
                     ),
-                    if at == self.candidate { ACCENT } else { FG },
-                );
+                    Span::styled(string(c, "value").to_owned(), name_style),
+                    Span::styled(format!("  {}", string(c, "detail")), MUTED),
+                ]);
                 f.render_widget(
                     Paragraph::new(line).style(Style::default().bg(Color::Rgb(40, 44, 40))),
                     Rect::new(

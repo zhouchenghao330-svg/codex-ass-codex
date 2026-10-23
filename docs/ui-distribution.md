@@ -4,7 +4,7 @@
 
 ## 下载和缓存
 
-`codex_room/ui_release.py` 的 `UI_VERSION` 固定选择一个 Release，例如 `0.2.1` 对应 `v0.2.1`，不使用 `latest`。按当前 Python 进程的系统和架构匹配程序：
+`codex_room/ui_release.py` 的 `UI_VERSION` 固定选择一个 Release，例如 `0.2.3` 对应 `v0.2.3`，不使用 `latest`。按当前 Python 进程的系统和架构匹配程序：
 
 | 系统 | x64 | ARM64 |
 |---|---|---|

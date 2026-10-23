@@ -106,9 +106,12 @@ mod tests {
         assert_eq!(images("\"图 片.png\" '图 片.png'", &dir).len(), 2);
         assert!(images("看这个 图 片.png", &dir).is_empty());
         assert!(images("不存在.png", &dir).is_empty());
+        // A Windows file URI is file:///C:/..., not file://C:\....
+        let url_path = dir.join("图 片.png").to_string_lossy().replace('\\', "/");
         let uri = format!(
-            "file://{}",
-            dir.join("图 片.png").to_string_lossy().replace(' ', "%20")
+            "file://{}{}",
+            if url_path.starts_with('/') { "" } else { "/" },
+            url_path.replace(' ', "%20")
         );
         assert_eq!(images(&uri, &dir).len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
