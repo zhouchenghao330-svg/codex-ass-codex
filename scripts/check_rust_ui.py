@@ -136,6 +136,53 @@ class RustUITests(unittest.TestCase):
         self.assertEqual(self.session.finish(send_quit=False), 0)
         self.assert_keyboard_restored()
 
+    def test_markdown_table_columns_reflow_with_sidebar_and_terminal_width(self):
+        source = (ROOT/"tests/fixtures/markdown_table.md").read_text()
+        directory = self.cwd/".codex-room"
+        directory.mkdir()
+        (directory/"state.json").write_text(json.dumps({"version":2,"agents":[{
+            "name":"A","label":"A","color":"#a9b6ff","cwd":str(self.cwd)}],"selected":"A","show_all":False,
+            "entries":[{"id":"table","sender":"A","body":source,"state":"done",
+                        "blocks":[{"id":"text","kind":"text","text":source}]}]}))
+        self.start(columns=110, rows=60)
+
+        def assert_table(columns, sidebar):
+            left = (24 if sidebar else 0) + 2
+            right = columns - 2
+
+            def table_rows():
+                return [row for row in self.session.screen.buffer.values()
+                        if row.get(left) and row[left].data in ("┌", "│", "├", "└")]
+
+            self.session.wait(lambda:any(row[left].data == "└" and row.get(right)
+                                         and row[right].data == "┘" for row in table_rows()))
+            rows = table_rows()
+            self.assertGreater(len(rows), 6)
+            borders = "│┌┬┐├┼┤└┴┘"
+            positions = lambda row: [x for x in range(left, columns-1)
+                                     if row.get(x) and row[x].data and row[x].data in borders]
+            expected = positions(next(row for row in rows if row[left].data == "┌"))
+            self.assertEqual(len(expected), 4)
+            self.assertEqual(expected[0], left)
+            self.assertEqual(expected[-1], right)
+            for row in rows:
+                self.assertEqual(positions(row), expected)
+
+        assert_table(110, False)
+        self.click(1, 59)
+        assert_table(110, True)
+        self.session.resize(80, 60)
+        assert_table(80, True)
+        self.click(25, 59)
+        assert_table(80, False)
+        self.session.resize(160, 60)
+        assert_table(160, False)
+        self.finish()
+        restored = json.loads((directory/"state.json").read_text())
+        table = next(e for e in restored["entries"] if e["id"] == "table")
+        self.assertEqual(table["body"], source)
+        self.assertEqual(table["blocks"][0]["text"], source)
+
     def test_footer_member_switch_reaches_latest_after_scrolling_and_reselect(self):
         agents = [{"name": name, "label": name, "color": "#78d8bc", "cwd": str(self.cwd)} for name in ("A", "B", "C")]
         entries = [{"id": f"{name}-{n}", "sender": name, "body": f"{name} history {n}\n" * 3,

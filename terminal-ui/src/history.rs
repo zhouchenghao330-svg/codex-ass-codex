@@ -19,8 +19,12 @@ pub struct Row {
     pub working: bool,
     pub source_start: Option<usize>,
 }
-pub fn parse(source: &str) -> Vec<Line<'static>> {
-    tui_markdown::from_str(&clean(source))
+pub fn parse(source: &str, width: usize) -> Vec<Line<'static>> {
+    // Tables must wrap their cells before the outer line wrapper runs; wrapping
+    // a natural-width table as plain text splits its borders and columns apart.
+    let options =
+        tui_markdown::Options::default().table_width(width.clamp(1, u16::MAX as usize) as u16);
+    tui_markdown::from_str_with_options(&clean(source), &options)
         .lines
         .into_iter()
         .map(|line| {

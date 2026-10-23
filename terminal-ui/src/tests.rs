@@ -24,6 +24,88 @@ fn select_rows(app: &mut App, first: usize, a: usize, last: usize, b: usize) {
     });
 }
 #[test]
+fn markdown_tables_fit_chat_columns_after_sidebar_and_window_resize() {
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
+    use unicode_width::UnicodeWidthStr;
+
+    let source = include_str!("../../tests/fixtures/markdown_table.md");
+    let legacy = entry("legacy", "A", source);
+    let mut reply = entry("reply", "A", source);
+    reply["blocks"] = json!([{"id":"text","kind":"text","text":source}]);
+    let mut peer = entry("peer", "A", source);
+    peer["target"] = json!("B");
+    peer["communication"] = json!({"content_available":true,"target_label":"B"});
+    let mut app = app(vec![legacy, reply, peer]);
+
+    for (columns, sidebar) in [
+        (160, false),
+        (160, true),
+        (80, true),
+        (80, false),
+        (160, false),
+    ] {
+        app.sidebar = sidebar;
+        let mut terminal = Terminal::new(TestBackend::new(columns, 50)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let width = (columns - if sidebar { 24 } else { 0 } - 3) as usize;
+        assert_eq!(app.timeline.width, width);
+        for message in 0..3 {
+            let rows = app
+                .timeline
+                .rows
+                .iter()
+                .filter(|r| r.message == message && r.action.is_empty() && !r.text.is_empty())
+                .collect::<Vec<_>>();
+            assert!(rows.len() > 6);
+            assert!(
+                rows[0].text.starts_with('┌') && rows[0].text.ends_with('┐'),
+                "broken top border at {width} columns: {}",
+                rows[0].text
+            );
+            assert!(rows.last().unwrap().text.ends_with('┘'));
+            let boundaries = |text: &str| {
+                text.char_indices()
+                    .filter(|(_, c)| "│┌┬┐├┼┤└┴┘".contains(*c))
+                    .map(|(byte, _)| text[..byte].width())
+                    .collect::<Vec<_>>()
+            };
+            let expected = boundaries(&rows[0].text);
+            assert_eq!(expected.len(), 4);
+            for row in &rows {
+                assert!(row.line.width() <= width);
+                assert_eq!(
+                    boundaries(&row.text),
+                    expected,
+                    "misaligned row: {}",
+                    row.text
+                );
+            }
+            let column_text = |column: usize| {
+                rows.iter()
+                    .filter(|r| r.text.starts_with('│'))
+                    .map(|r| r.text.split('│').nth(column + 1).unwrap())
+                    .collect::<String>()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect::<String>()
+            };
+            assert!(column_text(0).contains("接口方案A"));
+            assert!(column_text(1).contains("中文和English混排"));
+            assert!(column_text(2).contains("https://example.com/reference/very-long-continuous-path/without-any-spaces/terminal-markdown-table-width#END_OF_LONG_URL"));
+            assert!(rows.iter().flat_map(|r| &r.line.spans).any(
+                |s| s.content.contains("接口") && s.style.add_modifier.contains(Modifier::BOLD)
+            ));
+            assert!(
+                rows.iter()
+                    .flat_map(|r| &r.line.spans)
+                    .any(|s| s.content.contains("https")
+                        && s.style.add_modifier.contains(Modifier::UNDERLINED))
+            );
+            assert_eq!(app.entries[message]["body"], source);
+        }
+    }
+}
+#[test]
 fn copy_shortcuts_accept_macos_command_and_control_without_plain_c() {
     for modifiers in [
         KeyModifiers::SUPER,

@@ -243,7 +243,7 @@ impl Timeline {
                 );
             } else if collapsed {
                 push(
-                    history::parse(string(e, "body").lines().next().unwrap_or(""))
+                    history::parse(string(e, "body").lines().next().unwrap_or(""), self.width)
                         .into_iter()
                         .next()
                         .unwrap_or_default(),
@@ -253,7 +253,7 @@ impl Timeline {
                     false,
                 );
             } else {
-                for line in history::parse(string(e, "body")) {
+                for line in history::parse(string(e, "body"), self.width) {
                     push(line, String::new(), vec!["message".into()], false, false);
                 }
             }
@@ -371,7 +371,7 @@ impl Timeline {
                 let mut at = 0;
                 while at < blocks.len() {
                     if string(&blocks[at], "kind") == "text" {
-                        for line in history::parse(string(&blocks[at], "text")) {
+                        for line in history::parse(string(&blocks[at], "text"), self.width) {
                             push(
                                 line,
                                 String::new(),
@@ -565,7 +565,7 @@ impl Timeline {
                     }
                 }
             } else {
-                for line in history::parse(string(e, "body")) {
+                for line in history::parse(string(e, "body"), self.width) {
                     push(line, String::new(), vec![], false, false);
                 }
             }
