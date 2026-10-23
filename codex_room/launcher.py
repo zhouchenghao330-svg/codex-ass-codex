@@ -7,6 +7,33 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .ui_release import DownloadError, ensure_binary
+
+
+def build_binary(root: Path) -> Path:
+    """Explicit developer path; ordinary launches never invoke Cargo."""
+    manifest = root / "terminal-ui/Cargo.toml"
+    if not manifest.is_file():
+        manifest = Path(__file__).resolve().parent / "rust_ui/Cargo.toml"
+    if not manifest.is_file():
+        raise SystemExit("缺少 Rust 界面源码，请从 GitHub 克隆完整项目后构建。")
+    suffix = ".exe" if os.name == "nt" else ""
+    target = manifest.parent / "target"
+    executable = target / f"release/codex-room-ui{suffix}"
+    sources = [manifest, *manifest.parent.glob("Cargo.lock"), *manifest.parent.glob("src/**/*.rs")]
+    if not executable.is_file() or any(p.stat().st_mtime > executable.stat().st_mtime for p in sources):
+        cargo = shutil.which("cargo")
+        fallback = Path.home() / f".cargo/bin/cargo{suffix}"
+        cargo = cargo or (str(fallback) if fallback.is_file() else None)
+        if not cargo:
+            raise SystemExit("--build-ui 是开发者模式，需要 Rust 1.88+：https://rustup.rs 。普通启动请去掉 --build-ui。")
+        print("正在构建本地 Rust 界面…", flush=True)
+        result = subprocess.run([cargo, "build", "--release", "--locked", "--manifest-path", str(manifest),
+                                 "--target-dir", str(target)], cwd=manifest.parent)
+        if result.returncode:
+            raise SystemExit(result.returncode)
+    return executable
+
 
 def main() -> None:
     arguments = sys.argv[1:]
@@ -16,29 +43,14 @@ def main() -> None:
         legacy_main()
         return
     root = Path(__file__).resolve().parent.parent
-    manifest = root / "terminal-ui/Cargo.toml"
-    if not manifest.is_file():
-        manifest = Path(__file__).resolve().parent / "rust_ui/Cargo.toml"
+    build = "--build-ui" in arguments or os.environ.get("CODEX_ROOM_BUILD_UI") == "1"
+    arguments = [argument for argument in arguments if argument != "--build-ui"]
     binary = os.environ.get("CODEX_ROOM_BINARY")
     if not binary:
-        if not manifest.is_file():
-            raise SystemExit("缺少 Rust 界面源码，请使用完整源码包或加 --legacy-ui 启动旧版。")
-        suffix = ".exe" if os.name == "nt" else ""
-        target = manifest.parent / "target"
-        executable = target / f"release/codex-room-ui{suffix}"
-        sources = [manifest, *manifest.parent.glob("Cargo.lock"), *manifest.parent.glob("src/*.rs")]
-        if not executable.is_file() or any(p.stat().st_mtime > executable.stat().st_mtime for p in sources):
-            cargo = shutil.which("cargo")
-            fallback = Path.home() / f".cargo/bin/cargo{suffix}"
-            cargo = cargo or (str(fallback) if fallback.is_file() else None)
-            if not cargo:
-                raise SystemExit("Rust 界面首次启动需要 Rust：请从 https://rustup.rs 安装，或加 --legacy-ui 使用旧版。")
-            print("正在构建 Rust 界面（首次启动需要一点时间）…", flush=True)
-            result = subprocess.run([cargo, "build", "--release", "--locked", "--manifest-path", str(manifest),
-                                     "--target-dir", str(target)], cwd=manifest.parent)
-            if result.returncode:
-                raise SystemExit(result.returncode)
-        binary = str(executable)
+        try:
+            binary = str(build_binary(root) if build else ensure_binary())
+        except DownloadError as exc:
+            raise SystemExit(str(exc)) from exc
     environment = {**os.environ, "CODEX_ROOM_PYTHON": sys.executable, "CODEX_ROOM_ROOT": str(root)}
     try:
         # Do not exec: the launcher also works on Windows, and the Rust guard owns

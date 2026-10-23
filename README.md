@@ -4,21 +4,23 @@
 
 ## 启动
 
-源码运行需要 [uv](https://docs.astral.sh/uv/)、[Rust 1.88+](https://rustup.rs/) 和已登录、可正常运行的 Codex CLI。首次启动会安装 Python 依赖并构建 Rust 界面，后续直接使用已构建的程序；Rust 源码更新后会自动重新构建。
+需要 [uv](https://docs.astral.sh/uv/) 和已登录、可正常运行的 Codex CLI。**普通使用无需安装 Rust**。从 GitHub 克隆后，在项目目录运行：
 
 ```sh
 uv run codex_room
 ```
 
+首次安装 Python 依赖并匿名下载项目指定版本的预编译界面，校验 SHA-256 后缓存；后续直接复用缓存，无需 GitHub Token。支持 macOS Apple Silicon / Intel、Windows x64 / ARM64、Linux x64 / ARM64。更新时先退出 Room，再 `git pull --ff-only` 并用原命令重开；项目更改界面版本时会自动下载对应的新程序，原房间保留。
+
 同样支持 `uv run codex-room`、`uv run python -m codex_room`。通过 `--cwd /path/to/project` 指定房间目录。纯界面演示用 `--demo`，不连接 Codex、不写真实房间数据。
 
-旧 Textual 界面保留为显式回退，无需 Rust：
+旧 Textual 界面保留为显式回退，不下载 Rust 界面：
 
 ```sh
 uv run codex_room --legacy-ui
 ```
 
-Windows ZIP 可完整解压后运行 `start.bat`；首次构建需具备 Rust 的本机编译环境，步骤见 [Windows 说明](WINDOWS.md)。当前 Rust 界面已在 macOS 的 PTY 和真实 Codex 中验证，Windows 尚待实际运行验证。
+Windows 可双击 `start.bat`，步骤见 [Windows 说明](WINDOWS.md)。开发者修改 Rust 源码后使用 `uv run codex_room --build-ui`（需要 Rust 1.88+）；普通启动不会编译本地源码。缓存、网络故障及发布步骤见 [界面发行说明](docs/ui-distribution.md)。
 
 ## 成员与对话
 
@@ -98,16 +100,15 @@ Windows ZIP 可完整解压后运行 `start.bat`；首次构建需具备 Rust �
 
 ### 分享给同事
 
-推荐让同事从 GitHub 克隆到新目录，或下载 GitHub 的源码 ZIP，再使用自己的 Codex 登录与本地配置启动。直接在 Finder 压缩整个项目目录会把被 Git 忽略的 `.codex-room`、`.venv` 等本地文件一起带走；`.gitignore` 只影响 Git，不过滤普通 ZIP。
-
-需要自己制作源码 ZIP 时，只打包已提交的文件：
+推荐让同事从 GitHub 克隆到新目录，使用自己的 Codex 登录与本地配置启动：
 
 ```sh
-mkdir -p artifacts
-git archive --format=zip --prefix=codex-ass-codex/ --output=artifacts/codex-ass-codex-source.zip HEAD
+git clone https://github.com/zhouchenghao330-svg/codex-ass-codex.git
+cd codex-ass-codex
+uv run codex_room
 ```
 
-这个命令不会包含 `.git`、未跟踪或被忽略的聊天状态、虚拟环境和编译缓存。尚未提交的代码也不会进入 ZIP。同事若已经解压过包含旧房间的包，仅 `git pull` 不会清除该目录；先退出 Room，重命名 `.codex-room` 留作备份，再启动会创建新房间。程序不会擅自删除已有房间。
+Git 克隆不会带上被忽略的聊天状态、虚拟环境和编译缓存，Release 也只包含界面程序和校验文件。直接在 Finder 压缩整个项目目录会把 `.codex-room` 等本地文件一起带走；`.gitignore` 不过滤普通 ZIP。同事若已经解压过包含旧房间的包，仅 `git pull` 不会清除该目录；先退出 Room，重命名 `.codex-room` 留作备份，再启动会创建新房间。程序不会擅自删除已有房间。
 
 界面与通信边界、缓存和当前限制见 [Rust 迁移说明](docs/rust-fullscreen.md)；旧界面操作见 [Textual 旧版说明](docs/textual-legacy.md)。
 

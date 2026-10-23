@@ -1,0 +1,114 @@
+name: Release UI
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-ui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Verify tag and Python backend
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python scripts/release_ui.py verify-version --tag "$RELEASE_TAG"
+          python -m pip install uv
+          uv sync --locked
+          uv run python -m unittest discover -s tests -v
+
+  build:
+    needs: verify
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Prepare Rust toolchain
+        env:
+          UI_TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$UI_TARGET"
+      - name: Prepare static Linux linker
+        if: runner.os == 'Linux'
+        env:
+          UI_TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          linker_variable="CARGO_TARGET_$(echo "$UI_TARGET" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          echo "$linker_variable=musl-gcc" >> "$GITHUB_ENV"
+      - name: Test and build native UI
+        env:
+          UI_TARGET: ${{ matrix.target }}
+        run: |
+          python -m unittest discover -s tests -p test_launcher.py -v
+          cargo test --locked --manifest-path terminal-ui/Cargo.toml --target "$UI_TARGET"
+          cargo build --release --locked --manifest-path terminal-ui/Cargo.toml --target "$UI_TARGET"
+          python scripts/release_ui.py stage --target "$UI_TARGET"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ui-${{ matrix.target }}
+          path: dist/codex-room-ui-*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ui-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete asset set and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python scripts/release_ui.py checksums --tag "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "Codex Room $RELEASE_TAG" --notes-file docs/releases/v0.2.1.md
+          gh release edit "$RELEASE_TAG" --draft=false

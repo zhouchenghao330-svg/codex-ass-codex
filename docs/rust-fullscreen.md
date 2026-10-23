@@ -8,7 +8,7 @@
 - `codex_room/backend.py`：无界面的 Python 服务，复用经过验证的 `runtime.py` 与 `storage.py`，负责 Codex RPC、steer、取消、交互请求和 v2 存储。正常运行不加载 Textual。
 - `models.py`、`quotes.py`：新旧界面共享的消息与引用结构，不依赖界面框架。
 - `peer_router.py`、`peer_tools.py`：独立成员公开通信的协议与路由。新会话使用动态工具，已有会话由 `peer_mcp.py` 临时适配，保持原 thread。
-- `launcher.py`：构建并启动 Rust；`--legacy-ui` 显式启动旧 Textual。
+- `launcher.py`、`ui_release.py`：下载固定版本、校验并缓存 Rust 界面；只有显式 `--build-ui` 才本地构建。`--legacy-ui` 显式启动旧 Textual。发行步骤见 [界面发行说明](ui-distribution.md)。
 
 前后端通过子进程 stdio 的 JSON 行通信。UI 命令与 Codex RPC 是两条独立通道。鼠标事件、选区更新和输入编辑不会跨进程等待 Python。接收消息通过独立读线程进入 Rust，写消息也不会阻塞绘制循环。后端以约 33ms 合并消息补丁；状态定期原子保存，完成和退出时落盘。旧会话公开消息适配器另使用带进程随机令牌的本机回环端口，退出关闭，不对外网监听。
 
@@ -56,3 +56,12 @@ uv run scripts/check_rust_ui_live.py
 ```
 
 比较实验仍可用 `uv run python scripts/terminal_lab.py --lines 10000`。机器内绘制或缓存检查不能代替 Orca 中主观拖选体验，后续以真实使用反馈继续优化。
+
+多成员调度与 Markdown 的完整真实模型验收（需要已编译的本地 UI）：
+
+```sh
+uv run scripts/check_room_scenarios_live.py --model gpt-6.1-sol --effort medium
+uv run scripts/check_room_tables_live.py --model gpt-6.1-sol --effort medium
+```
+
+脚本保存聊天、事件及断言，失败时退出非零；不操作用户当前房间或真实剪贴板。`--explicit-peer-authorization` 可对 Queue/Steer 的用户授权范围做对照实验；表格脚本的 `--replay-state` 可用保存的真实输出复查，不额外调用模型。
