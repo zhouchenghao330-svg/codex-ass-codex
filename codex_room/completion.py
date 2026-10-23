@@ -20,6 +20,7 @@ COMMANDS = (
     ("/del", "移除成员，先归档会话记录 · 名字"),
     ("/rename", "重命名成员，保留会话 · [原名] 新名"),
     ("/model", "选择模型 · [模型] [推理强度]"),
+    ("/fast", "切换当前成员的 Fast 模式 · [on / off]"),
     ("/permissions", "选择权限 · [full / workspace / read-only]"),
     ("/members", "展开 / 收起成员列表"),
     ("/help", "查看帮助"),

@@ -50,6 +50,7 @@ class Member:
     model: str = ""
     effort: str = ""
     permission: str = "full"
+    service_tier: str | None = None
     legacy_instructions: bool = False
     parent_name: str = ""
     agent_path: str = ""
@@ -63,7 +64,7 @@ class Member:
 
     def config(self):
         return {key: getattr(self, key) for key in (
-            "name", "label", "color", "cwd", "thread_id", "model", "effort", "permission", "legacy_instructions",
+            "name", "label", "color", "cwd", "thread_id", "model", "effort", "permission", "service_tier", "legacy_instructions",
             "parent_name", "agent_path", "can_accept_direct_input", "native_closed", "room_tool_version")}
 
 
@@ -294,6 +295,16 @@ class Service:
                     await self.stop(name)
                 else:
                     await self.delete_member(name)
+        elif verb == "/fast":
+            if target not in self.agents:
+                raise ValueError("请先选择成员或用 @名字 /fast")
+            member = self.agents[target]
+            if member.parent_name:
+                raise ValueError("原生子代理的 Fast 模式由 Codex 父会话管理，请在父会话中调整")
+            if not self.client or not self.connected:
+                raise ValueError("请先连接 Codex，再切换 Fast 模式")
+            enable = await self.client.set_fast_mode(member, value.split()[1:])
+            self.notify(f"@{member.label} Fast 已{'开启' if enable else '关闭'} · 下一轮生效")
         elif verb in {"/model", "/permissions", "/permission", "/permisson"}:
             if target not in self.agents:
                 raise ValueError("请先创建成员")

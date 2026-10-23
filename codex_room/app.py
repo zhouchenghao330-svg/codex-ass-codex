@@ -87,6 +87,7 @@ class Agent:
     model: str = ""
     effort: str = ""
     permission: str = "full"
+    service_tier: str | None = None
     legacy_instructions: bool = False
     cwd: str = ""
     parent_name: str = ""
@@ -101,7 +102,7 @@ class Agent:
 
     def config(self) -> dict:
         return {key: getattr(self, key) for key in (
-            "name", "label", "color", "thread_id", "model", "effort", "permission", "legacy_instructions", "cwd",
+            "name", "label", "color", "thread_id", "model", "effort", "permission", "service_tier", "legacy_instructions", "cwd",
             "parent_name", "agent_path", "can_accept_direct_input", "native_closed", "room_tool_version",
         )}
 
@@ -1257,11 +1258,11 @@ class CodexRoom(App):
         explicit_target = target
         target = target or self.selected
         managed = resolve_member(parts[1], self.agents) if command in {"/stop", "/del"} and len(parts) > 1 else target
-        if command in {"/model", "/permissions", "/permission", "/permisson", "/stop", "/del"} and managed in self.agents and (
+        if command in {"/model", "/fast", "/permissions", "/permission", "/permisson", "/stop", "/del"} and managed in self.agents and (
                 self.agents[managed].parent_name or command == "/del" and any(a.parent_name == managed for a in self.agents.values())):
             self.notify("原生子代理管理请使用默认 Rust 界面。", severity="warning")
             return False
-        if command in {"/model", "/permissions", "/permission", "/permisson"} and target not in self.agents:
+        if command in {"/model", "/fast", "/permissions", "/permission", "/permisson"} and target not in self.agents:
             self.notify("先用 /add 名字 创建 Codex，再调整它的设置。", severity="warning")
             return False
         if command == "/add":
@@ -1328,6 +1329,17 @@ class CodexRoom(App):
             self.action_toggle_sidebar()
         elif command == "/model":
             return await self.configure_model(target, parts[1:])
+        elif command == "/fast":
+            if not self.client or not self.connected:
+                self.notify("请先连接 Codex，再切换 Fast 模式", severity="warning")
+                return False
+            try:
+                enabled = await self.client.set_fast_mode(self.agents[target], value.split()[1:])
+            except ValueError as exc:
+                self.notify(str(exc), severity="warning")
+                return False
+            self.notify(f"@{self.agents[target].label} Fast 已{'开启' if enabled else '关闭'} · 下一轮生效")
+            self.save_state()
         elif command in {"/permissions", "/permission", "/permisson"}:
             if len(parts) > 1:
                 mode = {"full-access": "full", "workspace-write": "workspace"}.get(parts[1], parts[1])

@@ -35,6 +35,8 @@ Windows 可双击 `start.bat`，步骤见 [Windows 说明](WINDOWS.md)。开发�
 /focus 笔记
 /focus all
 /model
+/fast
+@环境排查 /fast off
 @环境排查 /model 模型名 low
 /permissions workspace
 /stop 环境排查
@@ -52,6 +54,8 @@ Windows 可双击 `start.bat`，步骤见 [Windows 说明](WINDOWS.md)。开发�
 开头连续 @ 多位成员时，各自收到同一任务、使用独立 thread 并行处理；不存在的成员会在任何投递前报错。正文普通提及不会转发给别人。忙时用户新消息使用 `turn/steer` 追加到当前轮；启动期间先暂存，拿到 turn ID 后追加。不对超时或不确定的投递盲目重发。追加的用户消息位于对话中间，新输出接在它后面，旧工具结果保持原位。同伴消息默认排队，也可由发送者显式选择 Steer；用户消息优先。
 
 默认权限为 **Full Access**（danger-full-access / never）。模型、强度和权限按成员保存，调整从下一轮生效。后台完成或请求交互只做轻量提示；可切到成员后点「回复请求」处理。MCP 任意表单暂不支持，会明确取消。`/del 名字` 先停止并归档该成员，不删除项目目录或 Codex 原生历史。
+
+`@名字 /fast` 切换该成员的 Fast 模式，再执行一次关闭；直接 `/fast` 切换当前成员。也可明确 `/fast on`、`/fast off`。未设置时沿用该目录的 Codex 默认值，切换会提示实际开关状态并保存，从下一轮生效，不打断当前任务、不改全局配置或其他成员。关闭时显式选择 Standard，覆盖原来的 Fast 默认值；支持情况以本机 Codex 返回的模型目录为准，不支持时会明确提示。原生子代理的设置由父会话管理。此命令由 Python 服务处理，与 v0.2.3 预编译界面兼容。[Codex 官方 Fast 说明](https://learn.chatgpt.com/docs/agent-configuration/speed)。
 
 ## 阅读、输入与工具
 

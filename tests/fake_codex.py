@@ -203,7 +203,7 @@ async def finish(thread, turn, text, params):
         elif text == "recall":
             text = threads[thread].get("memory", "NO_MEMORY")
         elif text == "settings":
-            text = json.dumps({key: params.get(key) for key in ("model", "effort", "approvalPolicy", "sandboxPolicy", "cwd")})
+            text = json.dumps({key: params.get(key) for key in ("model", "effort", "serviceTier", "approvalPolicy", "sandboxPolicy", "cwd")})
         elif text == "cwd-probe":
             cwd = Path(params["cwd"])
             text = json.dumps({"cwd": str(cwd), "threadCwd": threads[thread]["cwd"],

@@ -188,6 +188,37 @@ class CodexClient:
             if not cursor:
                 return turns
 
+    def fast_service_tier(self, model: str) -> str | None:
+        catalog = next((m for m in self.models if m["id"] == model), {})
+        if "serviceTiers" in catalog:
+            return next((tier["id"] for tier in catalog["serviceTiers"]
+                         if tier.get("name", "").lower() == "fast" or tier.get("id") in {"fast", "priority"}), None)
+        return "priority" if "fast" in catalog.get("additionalSpeedTiers", []) else None
+
+    async def effective_service_tier(self, agent) -> str | None:
+        explicit = getattr(agent, "service_tier", None)
+        if explicit is not None:
+            return explicit
+        config = self.config
+        cwd = agent.cwd or self.cwd
+        if cwd != self.cwd:
+            config = (await self.request("config/read", {"includeLayers": False, "cwd": cwd})).get("config", {})
+        if config.get("service_tier"):
+            return config["service_tier"]
+        catalog = next((m for m in self.models if m["id"] == agent.model), {})
+        return catalog.get("defaultServiceTier")
+
+    async def set_fast_mode(self, agent, args: list[str]) -> bool:
+        if args not in ([], ["on"], ["off"]):
+            raise ValueError("用 /fast 切换，或 /fast on、/fast off")
+        current = await self.effective_service_tier(agent)
+        enable = args == ["on"] or (not args and current not in {"fast", "priority"})
+        tier = self.fast_service_tier(agent.model) if enable else "default"
+        if not tier:
+            raise ValueError(f"当前模型 {agent.model or '项目默认'} 没有提供 Fast 模式")
+        agent.service_tier = tier
+        return enable
+
     async def ensure_thread(self, agent) -> dict:
         lock = self.load_locks.setdefault(agent.name if hasattr(agent, "name") else agent.thread_id or self.cwd, asyncio.Lock())
         async with lock:
@@ -206,6 +237,8 @@ class CodexClient:
             params["model"] = agent.model
         if agent.effort:
             params["config"] = {"model_reasoning_effort": agent.effort}
+        if getattr(agent, "service_tier", None) is not None:
+            params["serviceTier"] = agent.service_tier
         if self.thread_options:
             options = self.thread_options(agent)
             params["config"] = {**params.get("config", {}), **options.get("config", {})}
@@ -277,6 +310,10 @@ class CodexClient:
             params["model"] = agent.model
         if agent.effort:
             params["effort"] = agent.effort
+        if getattr(agent, "service_tier", None) is not None:
+            # Omission would retain the previous Fast selection or inherit a
+            # project-wide Fast default; "default" explicitly selects Standard.
+            params["serviceTier"] = agent.service_tier
         starting = asyncio.create_task(self.request("turn/start", params))
         turn_id = None
         try:
