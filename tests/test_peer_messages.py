@@ -13,6 +13,7 @@ from codex_room.attachments import Prompt
 from codex_room.backend import Member, Service
 from codex_room.models import Entry
 from codex_room.peer_router import MAX_MESSAGES, PeerRouter, is_public
+from codex_room.peer_tools import SCHEMA
 from codex_room.runtime import CodexError
 
 FAKE = Path(__file__).with_name("fake_codex.py")
@@ -29,6 +30,7 @@ class PeerRoutingTests(unittest.TestCase):
         self.peers = self.room.peers
 
     def send(self, sender="A", **args):
+        args.setdefault("expect_reply", True)
         return self.peers.send("thread-" + sender, "turn-" + sender, f"call-{len(self.room.entries)}", args)
 
     def delivered(self, receipt):
@@ -49,7 +51,7 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertEqual(len(self.dispatched), 1)
 
     def test_retry_returns_same_receipt_and_changed_arguments_are_rejected(self):
-        args = {"to": "B", "message": "once"}
+        args = {"to": "B", "message": "once", "expect_reply": True}
         first = self.peers.send("thread-A", "turn-A", "same-call", args)
         self.delivered(first)
         again = self.peers.send("thread-A", "turn-A", "same-call", args)
@@ -67,30 +69,63 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertTrue(self.send(to="@笔记员", message="记下来")["accepted"])
         self.assertEqual(self.dispatched[-1].target, "B")
 
-    def test_reply_ownership_and_no_answer_hint_does_not_close_unfinished_work(self):
+    def test_expect_reply_is_required_in_schema_and_router_without_any_default(self):
+        self.assertIn("expect_reply", SCHEMA["required"])
+        for index, invalid in enumerate(({}, {"expect_reply": None}, {"expect_reply": 0}, {"expect_reply": "false"})):
+            result = self.peers.send("thread-A", "turn-A", f"invalid-{index}",
+                                     {"to": "B", "message": "x", **invalid})
+            self.assertFalse(result["accepted"], result)
+            self.assertIn("There is no default", result["error"])
+        self.assertEqual(self.dispatched, [])
+        self.assertFalse(self.peers.messages)
+
+    def test_reply_ownership_and_false_block_before_creating_or_dispatching_message(self):
         request = self.delivered(self.send(to="B", message="问题"))
         self.assertFalse(self.send(sender="C", to="A", message="fake", reply_to=request.id)["accepted"])
-        reply = self.delivered(self.send(sender="B", to="A", message="2", reply_to=request.id))
+        reply = self.delivered(self.send(sender="B", to="A", message="结论", reply_to=request.id, expect_reply=False))
         self.assertFalse(reply.communication["expect_reply"])
         self.assertEqual(reply.communication["chain_id"], request.communication["chain_id"])
-        self.assertIn("does NOT close the conversation", reply.input_text)
-        self.assertIn("do not send an acknowledgement", reply.input_text)
-        result = self.send(to="B", message="3", reply_to=reply.id, expect_reply=True)
-        self.assertTrue(result["accepted"], result)
-        self.assertEqual(self.peers.messages[result["message_id"]].communication["chain_id"], request.communication["chain_id"])
+        self.assertIn("blocked by the host", reply.input_text)
+        result = self.send(to="B", message="谢谢", reply_to=reply.id, expect_reply=True)
+        self.assertFalse(result["accepted"], result)
+        self.assertIn("expect_reply=false", result["error"])
         self.room.active_entries["A"][1].peer_context = reply.id
-        self.assertFalse(self.send(to="B", message="3")["accepted"])
+        self.assertFalse(self.send(to="B", message="谢谢")["accepted"])
+        self.assertEqual(len(self.dispatched), 2)
+        self.assertEqual(len(self.room.entries), 2)
+        self.assertEqual(len(self.peers.messages), 2)
+        self.assertFalse(self.room.agents["B"].queue)
 
-    def test_counting_to_eleven_survives_intermediate_no_answer_hints(self):
+    def test_counting_to_eleven_then_false_blocks_replies_and_older_message_bypass(self):
         receipt = self.send(to="B", message="1", expect_reply=True)
         for number in range(2, 12):
             previous = self.delivered(receipt)
             receipt = self.send(sender=previous.target, to=previous.sender, message=str(number),
-                                reply_to=previous.id, expect_reply=number % 2 == 1 and number < 11)
+                                reply_to=previous.id, expect_reply=number < 11)
             self.assertTrue(receipt["accepted"], receipt)
+        final = self.delivered(receipt)
         self.assertEqual([e.body for e in self.dispatched], [str(n) for n in range(1, 12)])
         self.assertEqual(len({e.communication["chain_id"] for e in self.dispatched}), 1)
-        self.assertFalse(self.dispatched[-1].communication["expect_reply"])
+        self.assertFalse(final.communication["expect_reply"])
+        self.room.active_entries["B"][1].peer_context = final.id
+        earlier_true = self.dispatched[-3]
+        self.assertTrue(earlier_true.communication["expect_reply"])
+        for reply_to in (final.id, earlier_true.id, None):
+            result = self.send(sender="B", to="A", message="收到，谢谢", reply_to=reply_to)
+            self.assertFalse(result["accepted"], result)
+            self.assertIn("expect_reply=false", result["error"])
+        self.assertEqual(len(self.dispatched), 11)
+        self.assertEqual(len(self.room.entries), 11)
+        self.assertFalse(self.room.agents["A"].queue)
+
+    def test_new_user_task_can_contact_the_same_member_after_a_false_message(self):
+        final = self.delivered(self.send(sender="B", to="A", message="finished", expect_reply=False))
+        self.room.active_entries["A"][1].peer_context = final.id
+        self.assertFalse(self.send(to="B", message="thanks")["accepted"])
+        self.room.active_entries["A"] = (Entry("you", "new task", "A"), Entry("A", "", run_id="new-user-run"))
+        receipt = self.send(to="B", message="a new user-requested task")
+        self.assertTrue(receipt["accepted"], receipt)
+        self.assertEqual(self.peers.messages[receipt["message_id"]].communication["chain_id"], "new-user-run")
 
     def test_chain_budget_bounds_even_explicit_reciprocal_requests(self):
         receipt = self.send(to="B", message="start")
@@ -168,7 +203,7 @@ class PeerRoutingTests(unittest.TestCase):
 
     def test_save_failure_is_not_acknowledged_or_retried(self):
         self.room.save = Mock(side_effect=OSError("disk full"))
-        args = {"to": "B", "message": "not persisted"}
+        args = {"to": "B", "message": "not persisted", "expect_reply": True}
         first = self.peers.send("thread-A", "turn-A", "disk-failure", args)
         again = self.peers.send("thread-A", "turn-A", "disk-failure", args)
         self.assertFalse(first["accepted"])
@@ -185,7 +220,7 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertEqual(len(self.dispatched), 1)
 
     def test_mcp_sender_comes_from_codex_metadata_and_expired_turn_cannot_send(self):
-        args = {"to": "B", "message": "public"}
+        args = {"to": "B", "message": "public", "expect_reply": True}
         self.assertFalse(self.peers.mcp_call({"arguments": args})["accepted"])
         self.assertFalse(self.peers.mcp_call({"_meta": "bad", "arguments": args})["accepted"])
         result = self.peers.mcp_call({"_meta": {"callId": "mcp-call", "x-codex-turn-metadata": {
@@ -247,6 +282,16 @@ class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(public), 2)
         self.assertEqual(public[0].communication["delivery"], "steered")
         self.assertEqual(public[0].server_turn_id, original)
+
+    async def test_actual_tool_call_that_ignores_false_gets_error_without_delivering(self):
+        await self.room.submit(Prompt("@A peer-force-ack B"))
+        await self.until(lambda: all(not a.busy for a in self.room.agents.values()))
+        public = [e for e in self.room.entries if is_public(e)]
+        self.assertEqual([(e.sender, e.target) for e in public], [("A", "B"), ("B", "A")])
+        self.assertFalse(public[-1].communication["expect_reply"])
+        self.assertTrue(any("PEER_ACK_BLOCKED:True" in e.body for e in self.room.entries))
+        self.assertTrue(any(b.kind == "tool" and b.status == "failed" for e in self.room.entries for b in e.blocks))
+        self.assertFalse(any(member.queue for member in self.room.agents.values()))
 
     async def test_uncertain_steer_is_not_queued_for_retry(self):
         await self.room.submit(Prompt("@B slow"))

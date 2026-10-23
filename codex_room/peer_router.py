@@ -55,10 +55,12 @@ class PeerRouter:
                 + "\nFor user-requested cooperation use room.send_message (old sessions: "
                   "codex_room_public/send_message). Its message text is public. The receipt is not an answer; "
                   "do not wait or poll. A peer reply arrives as new input. Reply to a Room request using "
-                  "the same tool and its message_id. expect_reply is only an answer-request hint, never a "
-                  "conversation lock: continue unfinished user-requested cooperation even if it is false. "
-                  "Use expect_reply=true for intermediate turns that need a peer's next contribution, "
-                  "false when no answer is needed. Do not send acknowledgement-only replies. "
+                  "the same tool and its message_id. Current rules supersede earlier Room tool/host descriptions: "
+                  "expect_reply is REQUIRED on every call; there is no default. Use true when the peer must "
+                  "continue (including intermediate discussion/counting steps), false when no reply is needed. "
+                  "An incoming false message is still delivered for your user's work, but automatic messages "
+                  "back to its sender are blocked by the host. Do not retry, acknowledge, omit reply_to, or use "
+                  "an older message_id to bypass this. Other tools and reporting to the user remain available. "
                   "Do not contact members merely because they are listed.\n[/Codex Room host context]")
 
     def mcp_call(self, params):
@@ -95,15 +97,15 @@ class PeerRouter:
         if not sender or sender.parent_name:
             return self.error("Public Room tools currently connect independent members; use native tools inside child trees.")
         if not isinstance(arguments, dict) or set(arguments) - {"to", "message", "reply_to", "expect_reply"}:
-            return self.error("Use to, message, optional reply_to and expect_reply only. The host determines the sender.")
+            return self.error("Use required to, message, expect_reply and optional reply_to only. The host determines the sender.")
         to, text, reply_to = (arguments.get(k) for k in ("to", "message", "reply_to"))
         if not isinstance(to, str) or not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
             return self.error(f"Specify to and nonempty message (at most {MAX_TEXT} characters).")
         if reply_to is not None and not isinstance(reply_to, str):
             return self.error("reply_to must be a message_id or null.")
-        expect = arguments.get("expect_reply", not bool(reply_to))
+        expect = arguments.get("expect_reply")
         if not isinstance(expect, bool):
-            return self.error("expect_reply must be boolean.")
+            return self.error("Explicitly set expect_reply=true when the peer must continue, false when no reply is needed. There is no default.")
         key = "room-" + hashlib.sha256(f"{thread_id}:{turn_id}:{call_id}".encode()).hexdigest()[:24]
         fingerprint = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         if key in self.messages:
@@ -118,7 +120,8 @@ class PeerRouter:
         if not target or target.parent_name or target.name == sender.name:
             return self.error("Choose another independent member from the roster.")
         answer = app.active_entries[sender.name][1]
-        incoming = self.messages.get(reply_to or answer.peer_context)
+        current = self.messages.get(answer.peer_context)
+        incoming = self.messages.get(reply_to) if reply_to else current
         if reply_to:
             if (not incoming or incoming.target != sender.name or incoming.sender != target.name
                     or incoming.communication["source_thread_id"] != target.thread_id
@@ -136,7 +139,15 @@ class PeerRouter:
                     self.delivery(incoming, "steered")
                 else:
                     return self.error("That incoming message was not confirmed delivered.")
-        elif incoming and incoming.target == sender.name and incoming.sender == target.name:
+        # A model can still propose a call after receiving false. Reject before
+        # persisting/enqueueing; omitting reply_to or choosing an older true
+        # message must not bypass the latest input's no-reply boundary.
+        if any(entry and entry.target == sender.name and entry.sender == target.name
+               and entry.communication["source_thread_id"] == target.thread_id
+               and entry.communication["target_thread_id"] == thread_id
+               and not entry.communication["expect_reply"] for entry in (incoming, current)):
+            return self.error("The incoming message has expect_reply=false. Automatic messages back to its sender are blocked; nothing sent. Do not retry or start another conversation to acknowledge it. Continue your user's work or report to the user.")
+        if not reply_to and incoming and incoming.target == sender.name and incoming.sender == target.name:
             return self.error(f"To answer this request, set reply_to={incoming.id}. Do not start a duplicate conversation.")
         chain = incoming.communication["chain_id"] if incoming else answer.run_id
         if chain in self.stopped:

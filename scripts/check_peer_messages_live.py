@@ -91,6 +91,7 @@ async def main():
             assert [e.sender for e in counted] == ["A" if n % 2 else "B" for n in range(1, 12)]
             assert all(e.communication["delivery"] in {"delivered", "steered"} for e in counted)
             assert len({e.communication["chain_id"] for e in counted}) == 1
+            assert [e.communication["expect_reply"] for e in counted] == [True] * 10 + [False]
             assert {a.name: a.thread_id for a in room.agents.values()} == identities
             print("PASS two real Codex members alternate 1 through 11 without acknowledgement loops", flush=True)
         finally:
