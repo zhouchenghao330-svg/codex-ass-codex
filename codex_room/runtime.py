@@ -57,6 +57,7 @@ class CodexClient:
         self.observer = None
         self.thread_options = None
         self.input_context = None
+        self.thread_names = {}
 
     async def start(self) -> None:
         try:
@@ -163,10 +164,10 @@ class CodexClient:
         self.loaded.add(thread_id)
         return result["thread"]
 
-    async def native_turns(self, thread_id: str) -> list[dict]:
+    async def native_turns(self, thread_id: str, *, page_size=100) -> list[dict]:
         turns, cursor = [], None
         while True:
-            params = {"threadId": thread_id, "limit": 100, "itemsView": "full", "sortDirection": "asc"}
+            params = {"threadId": thread_id, "limit": page_size, "itemsView": "full", "sortDirection": "asc"}
             if cursor:
                 params["cursor"] = cursor
             page = await self.request("thread/turns/list", params)
@@ -224,6 +225,15 @@ class CodexClient:
         async with lock:
             return await self._ensure_thread(agent)
 
+    async def sync_member_title(self, agent):
+        if (not agent.thread_id or getattr(agent, "parent_name", "")
+                or getattr(agent, "preserve_thread_title", False)):
+            return
+        title = "Room · " + agent.label
+        if self.thread_names.get(agent.thread_id) != title:
+            await self.request("thread/name/set", {"threadId": agent.thread_id, "name": title})
+            self.thread_names[agent.thread_id] = title
+
     async def _ensure_thread(self, agent) -> dict:
         if agent.thread_id in self.loaded:
             return {}
@@ -233,6 +243,12 @@ class CodexClient:
             "cwd": cwd, "approvalPolicy": policy,
             "sandbox": {"full": "danger-full-access", "workspace": "workspace-write", "read-only": "read-only"}[agent.permission],
         }
+        original_policy = getattr(agent, "resume_policy", None)
+        if original_policy:
+            params["approvalPolicy"] = original_policy["approvalPolicy"]
+            # Resume keeps its saved sandbox; turn/start below also sends the
+            # exact original policy (including custom writable roots/network).
+            params.pop("sandbox", None)
         if agent.model:
             params["model"] = agent.model
         if agent.effort:
@@ -257,6 +273,11 @@ class CodexClient:
         if new_thread and params.get("dynamicTools"):
             agent.room_tool_version = TOOL_VERSION
         self.loaded.add(agent.thread_id)
+        try:
+            await self.sync_member_title(agent)
+        except CodexError as exc:
+            # Title metadata must never prevent a user's task from running.
+            self.diagnostics.append("会话标题同步失败：" + clean_error(exc))
         if not agent.model:
             agent.model = result.get("model", "")
         if not agent.effort:
@@ -304,6 +325,9 @@ class CodexClient:
         self.queues[thread_id] = queue
         cwd = agent.cwd or self.cwd
         policy, sandbox = permission_settings(agent.permission, cwd)
+        original_policy = getattr(agent, "resume_policy", None)
+        if original_policy:
+            policy, sandbox = original_policy["approvalPolicy"], original_policy["sandboxPolicy"]
         params = {"threadId": thread_id, "input": self.turn_input(thread_id, text, images),
                   "cwd": cwd, "approvalPolicy": policy, "sandboxPolicy": sandbox}
         if agent.model:

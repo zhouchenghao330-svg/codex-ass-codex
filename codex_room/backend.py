@@ -57,6 +57,8 @@ class Member:
     can_accept_direct_input: bool = True
     native_closed: bool = False
     room_tool_version: int = 0
+    preserve_thread_title: bool = False
+    resume_policy: dict | None = None
     busy: bool = False
     phase: str = "空闲"
     queue: deque = field(default_factory=deque)
@@ -65,7 +67,8 @@ class Member:
     def config(self):
         return {key: getattr(self, key) for key in (
             "name", "label", "color", "cwd", "thread_id", "model", "effort", "permission", "service_tier", "legacy_instructions",
-            "parent_name", "agent_path", "can_accept_direct_input", "native_closed", "room_tool_version")}
+            "parent_name", "agent_path", "can_accept_direct_input", "native_closed", "room_tool_version",
+            "preserve_thread_title", "resume_policy")}
 
 
 def summary_title(value):
@@ -189,6 +192,8 @@ class Service:
             for member in self.agents.values():
                 if not member.parent_name:
                     await self.inherit_defaults(member)
+                    if member.thread_id:
+                        await self.sync_title(member)
             await self.native.start()
             self.notify("Codex 已连接")
             self.dirty = True
@@ -197,7 +202,7 @@ class Service:
         self.members()
 
     async def inherit_defaults(self, member):
-        if not self.client or not self.connected or (member.model and member.effort):
+        if member.preserve_thread_title or not self.client or not self.connected or (member.model and member.effort):
             return
         config = self.client.config
         if member.cwd != str(self.cwd):
@@ -215,6 +220,13 @@ class Service:
                 if effort not in supported:
                     effort = supported[0] if supported else ""
             member.effort = effort
+
+    async def sync_title(self, member):
+        if self.client and self.connected:
+            try:
+                await self.client.sync_member_title(member)
+            except CodexError as exc:
+                self.notify(f"@{member.label} 会话标题同步失败：{clean_error(exc)}")
 
     def choose_model(self, member):
         models = list(self.client.models) if self.client else []
@@ -273,6 +285,9 @@ class Service:
             self.selected, self.show_all = name, False
             self.notify(f"@{name} 已加入 · {cwd}")
             self.choose_model(member)
+        elif verb == "/resume":
+            from .resume import resume_member
+            await resume_member(self, value)
         elif verb == "/rename":
             if len(parts) == 3:
                 target, label = resolve_member(parts[1], self.agents), parts[2]
@@ -283,6 +298,7 @@ class Service:
             if target not in self.agents:
                 raise ValueError("没有这个成员")
             self.agents[target].label = validate_name(label, self.agents, excluding=target)
+            await self.sync_title(self.agents[target])
         elif verb in {"/focus", "/stop", "/del"}:
             if verb == "/focus" and len(parts) == 2 and parts[1].casefold() == "all":
                 self.show_all = True
@@ -339,6 +355,7 @@ class Service:
                 if mode not in {"full", "workspace", "read-only"}:
                     raise ValueError("权限：full / workspace / read-only")
                 member.permission = mode
+                member.resume_policy = None  # The user explicitly selected a new Room policy.
             self.notify(f"@{member.label} 设置已保存，下一轮生效")
         elif verb == "/reconnect":
             if any(a.busy for a in self.agents.values()):
@@ -355,6 +372,12 @@ class Service:
         return True
 
     async def submit(self, prompt, quote=None):
+        # A long pasted recovery command may be an atomic paste attachment.
+        # Expand only this local command; never dispatch it as an agent task.
+        expanded = prompt.expand()
+        words = expanded.split(maxsplit=1)
+        if not quote and not prompt.images and words and words[0].lower() == "/resume":
+            return await self.command(expanded)
         if not prompt.attachments and not quote and is_room_command(prompt.text):
             return await self.command(prompt.text)
         names = [self.selected]
@@ -630,7 +653,7 @@ class Service:
             if turn_id:
                 answer.server_turn_id = turn_id
                 self.active_entries[name][0].server_turn_id = turn_id
-                if agent.parent_name:
+                if agent.parent_name or agent.preserve_thread_title:
                     answer.native_thread_id = agent.thread_id
                     self.native.records[agent.thread_id, turn_id] = answer
             item = params.get("item", {})

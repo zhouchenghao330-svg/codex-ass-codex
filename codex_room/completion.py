@@ -15,6 +15,7 @@ from .member_config import resolve_member
 
 COMMANDS = (
     ("/add", "创建 Codex · 名字 [目录] [--color 颜色]"),
+    ("/resume", "接入本机已有会话 · 会话ID [成员名]"),
     ("/focus", "切到单人对话或聊天室 · 名字 / all"),
     ("/stop", "停止成员并取消尚未发出的消息 · 名字"),
     ("/del", "移除成员，先归档会话记录 · 名字"),

@@ -95,6 +95,8 @@ class Agent:
     can_accept_direct_input: bool = True
     native_closed: bool = False
     room_tool_version: int = 0
+    preserve_thread_title: bool = False
+    resume_policy: dict | None = None
 
     @property
     def accent(self) -> str:
@@ -104,6 +106,7 @@ class Agent:
         return {key: getattr(self, key) for key in (
             "name", "label", "color", "thread_id", "model", "effort", "permission", "service_tier", "legacy_instructions", "cwd",
             "parent_name", "agent_path", "can_accept_direct_input", "native_closed", "room_tool_version",
+            "preserve_thread_title", "resume_policy",
         )}
 
 

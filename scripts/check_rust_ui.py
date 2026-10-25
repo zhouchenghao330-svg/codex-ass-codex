@@ -145,6 +145,45 @@ class RustUITests(unittest.TestCase):
         self.assertEqual(self.session.finish(send_quit=False), 0)
         self.assert_keyboard_restored()
 
+    def test_resume_imports_history_at_bottom_and_continues_same_thread_after_restart(self):
+        from uuid import uuid4
+        tid = str(uuid4())
+        project = (self.cwd/'original project').resolve()
+        project.mkdir()
+        fixture = {"threads": {tid: {"id": tid, "name": "原对话", "cwd": str(project),
+            "model": "original-model", "reasoningEffort": "medium", "approvalPolicy": "never",
+            "sandbox": {"type": "readOnly", "networkAccess": False}, "memory": "RESUME_UI_TOKEN"}}, "turns": {tid: [
+                {"id": str(i), "status": "completed", "items": [
+                    {"id": "q", "type": "userMessage", "content": [{"type": "text", "text": f"USER_HISTORY_{i:03d}"}]},
+                    {"id": "a", "type": "agentMessage", "text": f"ANSWER_HISTORY_{i:03d}\n\n```python\nprint({i})\n```"}
+                ]} for i in range(40)]}}
+        (self.cwd/'resume-fixture.json').write_text(json.dumps(fixture))
+        os.environ['CODEX_ROOM_CODEX_COMMAND'] = json.dumps([str(ROOT/'.venv/bin/python'), str(ROOT/'tests/fake_resume_codex.py')])
+        self.start(columns=130, rows=38)
+        self.command('/resume ' + tid + ' 开发', finish='已恢复')
+        self.session.wait(lambda:'ANSWER_HISTORY_039' in self.session.visible)
+        self.assertNotIn('ANSWER_HISTORY_000', self.session.visible)
+        self.assertNotIn('选择模型', self.session.visible)
+        # Reusing the same ID also resets a manually scrolled view to the tail.
+        for _ in range(20):
+            self.session.send(b'\x1b[<64;70;12M')
+        self.session.wait(lambda:'ANSWER_HISTORY_039' not in self.session.visible)
+        self.command('/resume ' + tid, finish='已切到')
+        self.session.wait(lambda:'ANSWER_HISTORY_039' in self.session.visible)
+        self.command('recall', finish='RESUME_UI_TOKEN')
+        self.session.wait(lambda:'Worked for' in self.session.visible)
+        self.finish()
+        saved = json.loads((self.cwd/'.codex-room/state.json').read_text())
+        self.assertEqual(len(saved['agents']), 1)
+        self.assertEqual(saved['agents'][0]['thread_id'], tid)
+        self.assertEqual(len([e for e in saved['entries'] if e['body'] == 'USER_HISTORY_000']), 1)
+        self.assertEqual(json.loads((self.cwd/'resume-fixture.json').read_text())['threads'][tid]['name'], '原对话')
+        self.start(columns=130, rows=38)
+        self.session.wait(lambda:'RESUME_UI_TOKEN' in self.session.visible)
+        self.command('recall', finish='已完成')
+        self.session.wait(lambda:self.session.visible.count('RESUME_UI_TOKEN') >= 2)
+        self.finish()
+
     def test_add_model_and_effort_picker_mouse_keyboard_cancel_and_restore(self):
         self.start(columns=110, rows=34)
         self.command("/add 配置测试",setup=False)

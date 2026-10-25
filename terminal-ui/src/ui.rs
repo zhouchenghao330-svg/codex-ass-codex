@@ -172,7 +172,7 @@ impl App {
         }
         if self.timeline.rows.is_empty() {
             f.render_widget(
-                Paragraph::new("用 /add 名字 [目录] 创建 Codex。\n@ 点名，Tab 补全，F1 查看帮助。")
+                Paragraph::new("用 /add 名字 [目录] 创建 Codex，或 /resume 会话ID。\n@ 点名，Tab 补全，F1 查看帮助。")
                     .style(Style::default().fg(MUTED)),
                 Rect::new(
                     self.body.x + 2,
