@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 from .platform_support import lock_file, print_status
 
 
-UI_VERSION = "0.2.8"
+UI_VERSION = "0.2.9"
 REPOSITORY = "zhouchenghao330-svg/codex-ass-codex"
 RELEASE_URL = f"https://github.com/{REPOSITORY}/releases/download/v{UI_VERSION}"
 TARGETS = {

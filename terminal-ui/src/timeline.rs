@@ -478,23 +478,22 @@ impl Timeline {
                         if !files.is_empty() {
                             bits.push(format!("{} 文件 +{added} -{deleted}", files.len()));
                         }
+                        let mut summary = vec![Span::styled(
+                            format!("{} {}", if open { "▾" } else { "▸" }, bits.join(" · ")),
+                            MUTED,
+                        )];
                         if failed > 0 {
-                            bits.push(format!("{failed} 项失败"));
+                            if !bits.is_empty() {
+                                summary.push(Span::styled(" · ", MUTED));
+                            }
+                            summary.push(Span::styled(format!("× {failed} 项失败"), FG));
                         }
+                        summary.push(Span::styled(
+                            format!("  （点击{} · Ctrl+T）", if open { "收起" } else { "展开" }),
+                            MUTED,
+                        ));
                         push(
-                            Line::styled(
-                                format!(
-                                    "{} {}  （点击{} · Ctrl+T）",
-                                    if open { "▾" } else { "▸" },
-                                    bits.join(" · "),
-                                    if open { "收起" } else { "展开" }
-                                ),
-                                if failed > 0 {
-                                    Color::Rgb(232, 184, 120)
-                                } else {
-                                    MUTED
-                                },
-                            ),
+                            Line::from(summary),
                             format!("tools:{key}"),
                             ids.clone(),
                             false,
