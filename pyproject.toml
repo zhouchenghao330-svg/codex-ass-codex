@@ -1,6 +1,6 @@
 [project]
 name = "codex-room"
-version = "0.2.9"
+version = "0.2.10"
 description = "One terminal for several independent Codex sessions."
 requires-python = ">=3.11"
 dependencies = ["textual>=8.2.8,<9"]

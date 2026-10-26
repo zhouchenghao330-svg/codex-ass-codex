@@ -3,7 +3,20 @@ from __future__ import annotations
 
 TOOL_VERSION = 2
 
+COLLABORATION_PREFERENCE = """When cooperation is authorized and useful, first use list_members to inspect
+existing independent Room peers, their status and relevant recent dialogue.
+Prefer a suitable existing peer through Room's public send_message over creating
+a native Codex subagent with spawn_agent. This keeps the discussion visible to
+the user. Respect a user-named existing peer; do not replace it with a new agent.
+A busy peer is not a reason to spawn: queue independent requests for later.
+Do not recruit peers for work you can handle alone or merely because they exist.
+Use native subagents when the user explicitly requests them, or when no existing
+peer is suitable and native isolation is actually necessary; briefly explain
+that fallback to the user. This preference does not grant collaboration or
+resource-change permissions; the authorization rules still apply."""
+
 DESCRIPTION = """Send a PUBLIC message to another independent Codex Room member.
+""" + COLLABORATION_PREFERENCE + """
 Room policy: in Full Access you may independently request relevant peer help;
 otherwise use this for user-requested cooperation or to answer a Room request.
 Members have names, not fixed responsibilities. Do not contact members merely
@@ -49,6 +62,9 @@ SCHEMA = {
 }
 
 LIST_DESCRIPTION = """Read the current independent Codex Room member roster and recent dialogue.
+Use this first when choosing a collaborator, before considering native
+spawn_agent. Prefer suitable existing peers and use public send_message to
+request help. A busy peer can receive a queued request after its current work.
 Returns names, display names, directories, busy/idle state, pending input count,
 and recent user questions with a short preview of the associated Codex prose.
 Default 3 user turns, maximum 5; Codex previews have at most 3 lines. Set

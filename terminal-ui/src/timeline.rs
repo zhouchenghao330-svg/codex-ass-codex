@@ -403,7 +403,7 @@ impl Timeline {
                 .find(|m| string(m, "name") == string(member, "parent_name"));
             let heading = Line::from(vec![
                 Span::styled(
-                    format!("{} {label}  @{label}", if collapsed { "▸" } else { "▾" }),
+                    format!("{} {label}", if collapsed { "▸" } else { "▾" }),
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(format!(" · {cwd}"), MUTED),
