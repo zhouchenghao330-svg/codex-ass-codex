@@ -196,23 +196,29 @@ impl App {
             .iter()
             .find(|m| string(m, "name") == self.selected)
             .unwrap_or(&Value::Null);
-        let status_text = if self.notice_at.elapsed() < Duration::from_secs(7) {
-            self.notice.clone()
+        let identity_color = color(string(selected, "color"));
+        let status_line = if self.notice_at.elapsed() < Duration::from_secs(7) {
+            Line::styled(self.notice.clone(), MUTED)
         } else {
-            format!(
-                "@{} · {} · {} · {} · {}",
-                string(selected, "label"),
-                string(selected, "model"),
-                string(selected, "effort"),
-                if string(selected, "parent_name").is_empty() {
-                    string(selected, "permission")
-                } else {
-                    "权限由父会话管理"
-                },
-                string(selected, "cwd")
-            )
+            Line::from(vec![
+                Span::styled(format!("@{}", string(selected, "label")), identity_color),
+                Span::styled(
+                    format!(
+                        " · {} · {} · {} · {}",
+                        string(selected, "model"),
+                        string(selected, "effort"),
+                        if string(selected, "parent_name").is_empty() {
+                            string(selected, "permission")
+                        } else {
+                            "权限由父会话管理"
+                        },
+                        string(selected, "cwd")
+                    ),
+                    MUTED,
+                ),
+            ])
         };
-        f.render_widget(Line::styled(status_text, MUTED), status);
+        f.render_widget(status_line, status);
         if let Some(quote) = &self.draft.quote {
             let scope = if string(quote, "scope") == "all" {
                 "整个选区".into()
@@ -237,11 +243,15 @@ impl App {
         }
         let label = string(selected, "label");
         let title = if self.submit_pending.is_some() {
-            "正在确认发送…".into()
+            Line::styled("正在确认发送…", MUTED)
         } else {
-            format!("给 @{label} 发消息 · Enter 发送 · Ctrl+J 换行")
+            Line::from(vec![
+                Span::styled("给 ", MUTED),
+                Span::styled(format!("@{label}"), identity_color),
+                Span::styled(" 发消息 · Enter 发送 · Ctrl+J 换行", MUTED),
+            ])
         };
-        draw_input(f, self.input_area, &self.draft.input, &title);
+        draw_input(f, self.input_area, &self.draft.input, title);
         for (x, width, text) in [
             (0, 10, "[成员]"),
             (10, 10, "[转发]"),
@@ -577,14 +587,14 @@ impl App {
                         f,
                         Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 3),
                         &masked,
-                        "输入答案",
+                        Line::from("输入答案"),
                     );
                 } else {
                     draw_input(
                         f,
                         Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 3),
                         input,
-                        "输入答案或选项名称",
+                        Line::from("输入答案或选项名称"),
                     );
                 }
             }
@@ -610,7 +620,7 @@ impl App {
         self.need_save_draft = false;
     }
 }
-fn draw_input(f: &mut Frame, area: Rect, input: &Input, title: &str) {
+fn draw_input(f: &mut Frame, area: Rect, input: &Input, title: Line<'_>) {
     if area.height < 2 || area.width < 3 {
         return;
     }
