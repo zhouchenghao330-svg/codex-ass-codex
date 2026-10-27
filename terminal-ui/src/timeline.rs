@@ -1,4 +1,4 @@
-use crate::history::{self, ACCENT, FG, MUTED, Row};
+use crate::history::{self, ACCENT, BG, FG, MUTED, Row};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -16,6 +16,20 @@ pub fn color(v: &str) -> Color {
         }
     }
     ACCENT
+}
+// Match the preview's 8% member tint over the room background. Keep the
+// identity cue on the heading so long replies don't have a bright side rail.
+fn heading_style(accent: Color) -> Style {
+    let background = match (BG, accent) {
+        (Color::Rgb(br, bg, bb), Color::Rgb(r, g, b)) => {
+            let blend = |base: u8, tint: u8| {
+                ((u16::from(base) * 92 + u16::from(tint) * 8 + 50) / 100) as u8
+            };
+            Color::Rgb(blend(br, r), blend(bg, g), blend(bb, b))
+        }
+        _ => BG,
+    };
+    Style::default().bg(background)
 }
 pub fn duration(seconds: f64) -> String {
     let n = seconds.max(0.) as u64;
@@ -287,7 +301,8 @@ impl Timeline {
                         ),
                         MUTED,
                     ),
-                ]),
+                ])
+                .style(heading_style(accent)),
                 format!("collapse:{id}"),
                 vec![],
                 collapsed,
@@ -413,7 +428,8 @@ impl Timeline {
                         .unwrap_or_default(),
                     MUTED,
                 ),
-            ]);
+            ])
+            .style(heading_style(accent));
             push(heading, format!("collapse:{id}"), vec![], collapsed, false);
             if collapsed {
                 let text = string(e, "body")

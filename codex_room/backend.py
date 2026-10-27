@@ -61,6 +61,8 @@ class Member:
     resume_policy: dict | None = None
     busy: bool = False
     phase: str = "空闲"
+    fast_enabled: bool | None = None
+    fast_supported: bool | None = None
     queue: deque = field(default_factory=deque)
     delivery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -81,7 +83,7 @@ class Service:
         self.emit = emit or self.write
         self.store = None if demo else RoomStore(self.cwd / ".codex-room")
         self.saved = self.store.load() if self.store else {}
-        config_keys = {f.name for f in fields(Member)} - {"queue", "delivery_lock", "busy", "phase"}
+        config_keys = {f.name for f in fields(Member)} - {"queue", "delivery_lock", "busy", "phase", "fast_enabled", "fast_supported"}
         self.agents = {m["name"]: Member(**{k: v for k, v in m.items() if k in config_keys})
                        for m in self.saved.get("agents", [])}
         for member in self.agents.values():
@@ -101,6 +103,8 @@ class Service:
         self.reading_centered = self.saved.get("reading_centered") is True
         self.input_history = self.saved.get("input_history", [])
         self.drafts = self.saved.get("drafts", {})
+        from .attention import UnreadResults
+        self.attention = UnreadResults(self.entries, self.agents, self.saved.get("unread_results"))
         self.client = None
         self.connected = demo
         self.tasks = {}
@@ -128,12 +132,17 @@ class Service:
         self.emit({"type": "notice", "text": clean_error(message)})
 
     def members(self):
-        self.emit({"type": "members", "agents": [{**m.config(), "busy": m.busy, "phase": m.phase}
+        self.attention.pending = {name: entry_id for name, entry_id in self.attention.pending.items()
+                                  if name in self.agents}
+        self.emit({"type": "members", "agents": [{**m.config(), "busy": m.busy, "phase": m.phase,
+                   "fast_enabled": m.fast_enabled, "fast_supported": m.fast_supported,
+                   "unread_entry_id": self.attention.pending.get(m.name, "")}
                    for m in self.agents.values()], "selected": self.selected, "show_all": self.show_all,
                    "connected": self.connected, "demo": self.demo, "view_revision": self.view_revision})
         self.members_dirty = False
 
     def refresh_answer(self, answer):
+        self.attention.observe(answer)
         self.changed[answer.id] = answer
         self.dirty = True
         self.members_dirty = True
@@ -160,6 +169,7 @@ class Service:
                               entries=[{**old_entries.get(e.id, {}), **asdict(e)} for e in self.entries], selected=self.selected,
                               show_all=self.show_all, input_history=self.input_history, drafts=self.drafts,
                               reading_centered=self.reading_centered,
+                              unread_results=self.attention.pending,
                               ignored_native_threads=sorted(self.ignored_native_threads))
             self.saved.update(self.peers.saved_state())
             self.store.save(self.saved)
@@ -203,6 +213,7 @@ class Service:
 
     async def inherit_defaults(self, member):
         if member.preserve_thread_title or not self.client or not self.connected or (member.model and member.effort):
+            await self.refresh_fast_state(member)
             return
         config = self.client.config
         if member.cwd != str(self.cwd):
@@ -220,6 +231,17 @@ class Service:
                 if effort not in supported:
                     effort = supported[0] if supported else ""
             member.effort = effort
+        await self.refresh_fast_state(member)
+
+    async def refresh_fast_state(self, member):
+        member.fast_enabled = member.fast_supported = None
+        if member.parent_name or not self.client or not self.connected:
+            return
+        try:
+            member.fast_supported = bool(self.client.fast_service_tier(member.model))
+            member.fast_enabled = await self.client.effective_service_tier(member) in {"fast", "priority"}
+        except CodexError as exc:
+            self.notify(f"@{member.label} Fast 状态读取失败：{clean_error(exc)}")
 
     async def sync_title(self, member):
         if self.client and self.connected:
@@ -228,7 +250,7 @@ class Service:
             except CodexError as exc:
                 self.notify(f"@{member.label} 会话标题同步失败：{clean_error(exc)}")
 
-    def choose_model(self, member):
+    def choose_model(self, member, *, ui=None):
         models = list(self.client.models) if self.client else []
         if member.model and not any(m["id"] == member.model for m in models):
             models.insert(0, {"id": member.model, "displayName": "当前项目模型"})
@@ -239,9 +261,9 @@ class Service:
                    "action": "member-model", "data": {"member": member.name}, "selected": selected,
                    "values": [{"value": m["id"], "label": m["id"] or "沿用项目默认",
                                "detail": m.get("displayName", "") + (" · 当前" if m["id"] == member.model else "")}
-                              for m in models]})
+                              for m in models], **(ui or {})})
 
-    def choose_effort(self, member, model):
+    def choose_effort(self, member, model, *, ui=None):
         catalog = next((m for m in (self.client.models if self.client else []) if m["id"] == model), {})
         efforts = catalog.get("supportedReasoningEfforts", [])
         if not efforts:
@@ -255,7 +277,7 @@ class Service:
                    "action": "member-effort", "data": {"member": member.name, "model": model},
                    "selected": selected if selected in values else values[0],
                    "values": [{"value": e["reasoningEffort"], "label": e["reasoningEffort"] or "模型默认",
-                               "detail": e.get("description", "")} for e in efforts]})
+                               "detail": e.get("description", "")} for e in efforts], **(ui or {})})
 
     def set_model(self, member, model, effort):
         catalog = next((m for m in (self.client.models if self.client else []) if m["id"] == model), {})
@@ -330,6 +352,7 @@ class Service:
             if not self.client or not self.connected:
                 raise ValueError("请先连接 Codex，再切换 Fast 模式")
             enable = await self.client.set_fast_mode(member, value.split()[1:])
+            await self.refresh_fast_state(member)
             self.notify(f"@{member.label} Fast 已{'开启' if enable else '关闭'} · 下一轮生效")
         elif verb in {"/model", "/permissions", "/permission", "/permisson"}:
             if target not in self.agents:
@@ -346,6 +369,7 @@ class Service:
                 catalog = next((m for m in models if m["id"] == args[0]), {})
                 effort = (args[1] if len(args) > 1 else "") or catalog.get("defaultReasoningEffort") or member.effort
                 self.set_model(member, args[0], effort)
+                await self.refresh_fast_state(member)
             else:
                 if not args:
                     self.emit({"type": "choose", "title": "选择权限", "prefix": f"@{member.label} /permissions ",
@@ -889,6 +913,34 @@ class Service:
             self.show_all = message.get("show_all", False)
             self.dirty = True
             self.members()
+        elif kind == "read-result":
+            if self.attention.acknowledge(message.get("member"), message.get("entry_id")):
+                self.dirty = True
+                self.members()
+                self.save()
+        elif kind == "member-settings":
+            try:
+                member = self.agents.get(message.get("member"))
+                if not member:
+                    raise ValueError("这个成员已不存在，请重新选择")
+                if member.parent_name:
+                    raise ValueError("原生子代理的模型、思考强度和 Fast 由父会话管理")
+                ui = {"placement": "status", "request_id": message.get("id")}
+                if message.get("setting") == "model":
+                    self.choose_model(member, ui=ui)
+                elif message.get("setting") == "effort":
+                    self.choose_effort(member, member.model, ui=ui)
+                else:
+                    raise ValueError("请选择模型或思考强度")
+            except (ValueError, CodexError) as exc:
+                self.emit({"type": "setting-error", "request_id": message.get("id"), "text": clean_error(exc)})
+        elif kind == "member-fast":
+            if type(message.get("enabled")) is not bool:
+                raise ValueError("Fast 开关必须为 true 或 false")
+            member = self.agents.get(message.get("member"))
+            if not member:
+                raise ValueError("这个成员已不存在，请重新选择")
+            await self.command("/fast " + ("on" if message["enabled"] else "off"), member.name)
         elif kind in {"member-model", "member-effort"}:
             member = self.agents.get(message.get("member"))
             if not member:
@@ -900,9 +952,11 @@ class Service:
             if not isinstance(model, str) or (model not in known and model != member.model):
                 raise ValueError("模型列表已变化，请重新用 /model 选择")
             if kind == "member-model":
-                self.choose_effort(member, model)
+                self.choose_effort(member, model, ui={"placement": "status", "request_id": message.get("request_id")}
+                                   if message.get("placement") == "status" else None)
             else:
                 self.set_model(member, model, message.get("effort"))
+                await self.refresh_fast_state(member)
                 self.dirty = True
                 self.members()
                 self.notify(f"@{member.label} 已设置 · {member.model or '项目默认'} · {member.effort or '模型默认'} · 下一轮生效")
@@ -992,6 +1046,8 @@ async def serve(options):
             try:
                 await service.handle(message)
             except Exception as exc:
+                if message.get("placement") == "status":
+                    service.emit({"type": "setting-error", "request_id": message.get("request_id"), "text": clean_error(exc)})
                 service.notify(clean_error(exc))
     finally:
         start.cancel()

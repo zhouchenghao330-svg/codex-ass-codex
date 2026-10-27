@@ -1,7 +1,9 @@
+mod attention;
 mod bridge;
 mod history;
 mod input;
 mod paste;
+mod settings;
 mod table_copy;
 mod terminal;
 #[cfg(test)]
@@ -25,6 +27,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use serde_json::{Value, json};
+use settings::{Setting, SettingsMenu};
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -35,7 +38,7 @@ use std::{
 use timeline::{Timeline, color, duration, string};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const HELP: &str = "Codex Room · Rust Fullscreen\n\n/add 名字 [目录] [--color blue]   创建成员\n/resume 会话ID [成员名]   接入本机已有会话\n/rename 原名 新名   /del 名字\n/focus 名字   /focus all   /stop 名字\n/model [模型] [强度]   /permissions\n/adhd [on / off]   窄栏居中阅读\n/reconnect   /quit\n\n开头 @a @b 同时发送，各自独立处理；忙时追加到当前轮。\nTab 补全命令、成员、模型、目录、颜色；↑/↓ 选候选。\n空输入框 ↑/↓ 翻历史；Ctrl+J / Shift+Enter 换行。\n长粘贴和图片是块，退格整块删除；Alt+Enter 展开长文本。\nCtrl+Z / Ctrl+Y 撤销 / 重做；Ctrl+U 清空输入。\n\nCtrl+B 成员栏；Ctrl+L 全部/单人；Ctrl+N 创建。\n拖选只覆盖正文；双击片段，三击行；点高亮外取消。\n⌘C / Ctrl+C / Ctrl+Shift+C 复制选区；底部也有「复制」。\n无选区时仅 Ctrl+C 退出；⌘C 保留程序；Ctrl+Q 始终退出。\n拖到边缘自动滚动；滚轮每次 1 行；Ctrl+End 到底部。\n标题点击折叠回复；工具标题点击展开/收起摘要。\n单项点击查看详情；Ctrl+T 切换可见工具摘要。\nCtrl+F 转发选区，含跨过的折叠详情；Esc 取消。\n\n主界面为 Rust；Codex 通信与兼容存储由本地 Python 服务负责。\n原生子代理由父代理通过自然语言创建，自动加入成员。\n可直接 @子代理 续聊；V2 经父代理转交，展示子代理原话。\n子代理支持停止、归档删除和恢复；模型与权限由父会话管理。\n\n独立成员也可公开协作：让 A 用 Room 消息工具联系 B。\n互发原文显示为 A → B 卡片，支持折叠、复制和转发。\n同伴默认 Queue，可显式 Steer；用户消息优先追加。\nRoom list_members 可查成员及最近 3～5 轮简短对话。\n/stop 拦截旧链后续消息；每条链最多 12 条，避免空转。";
+const HELP: &str = "Codex Room · Rust Fullscreen\n\n/add 名字 [目录] [--color blue]   创建成员\n/resume 会话ID [成员名]   接入本机已有会话\n/rename 原名 新名   /del 名字\n/focus 名字   /focus all   /stop 名字\n/model [模型] [强度]   /permissions\n/adhd [on / off]   窄栏居中阅读\n/reconnect   /quit\n\n开头 @a @b 同时发送，各自独立处理；忙时追加到当前轮。\nTab 补全命令、成员、模型、目录、颜色；↑/↓ 选候选。\n空输入框 ↑/↓ 翻历史；Ctrl+J / Shift+Enter 换行。\n长粘贴和图片是块，退格整块删除；Alt+Enter 展开长文本。\nCtrl+Z / Ctrl+Y 撤销 / 重做；Ctrl+U 清空输入。\n\n点击输入框上方成员名 / Ctrl+B / /members：切换成员，查看实时忙闲。\nCtrl+L 全部/单人；Ctrl+N 创建。\n拖选只覆盖正文；双击片段，三击行；点高亮外取消。\n⌘C / Ctrl+C / Ctrl+Shift+C 复制选区；底部也有「复制」。\n无选区时仅 Ctrl+C 退出；⌘C 保留程序；Ctrl+Q 始终退出。\n拖到边缘自动滚动；滚轮每次 1 行；Ctrl+End 到底部。\n标题点击折叠回复；工具标题点击展开/收起摘要。\n单项点击查看详情；Ctrl+T 切换可见工具摘要。\nCtrl+F 转发选区，含跨过的折叠详情；Esc 取消。\n\n主界面为 Rust；Codex 通信与兼容存储由本地 Python 服务负责。\n原生子代理由父代理通过自然语言创建，自动加入成员。\n可直接 @子代理 续聊；V2 经父代理转交，展示子代理原话。\n子代理支持停止、归档删除和恢复；模型与权限由父会话管理。\n\n独立成员也可公开协作：让 A 用 Room 消息工具联系 B。\n互发原文显示为 A → B 卡片，支持折叠、复制和转发。\n同伴默认 Queue，可显式 Steer；用户消息优先追加。\nRoom list_members 可查成员及最近 3～5 轮简短对话。\n/stop 拦截旧链后续消息；每条链最多 12 条，避免空转。";
 
 #[derive(Clone, Default)]
 struct Draft {
@@ -84,9 +87,7 @@ struct App {
     show_all: bool,
     connected: bool,
     demo: bool,
-    sidebar: bool,
     reading_centered: bool,
-    sidebar_top: usize,
     ignore_left_release: bool,
     pending_bottom: bool,
     draft: Draft,
@@ -108,7 +109,12 @@ struct App {
     input_area: Rect,
     footer: Rect,
     context: Rect,
-    sidebar_area: Rect,
+    settings_bar: Rect,
+    attention_hit: Rect,
+    pending_reads: Vec<(String, String)>,
+    focused: bool,
+    setting_hits: Vec<(Rect, Setting)>,
+    settings: Option<SettingsMenu>,
     modal_area: Rect,
     completion_area: Rect,
     modal: Option<Modal>,
@@ -145,9 +151,7 @@ impl App {
             show_all: true,
             connected: false,
             demo: false,
-            sidebar: false,
             reading_centered: false,
-            sidebar_top: 0,
             ignore_left_release: false,
             pending_bottom: true,
             draft: Draft::default(),
@@ -169,7 +173,12 @@ impl App {
             input_area: Rect::default(),
             footer: Rect::default(),
             context: Rect::default(),
-            sidebar_area: Rect::default(),
+            settings_bar: Rect::default(),
+            attention_hit: Rect::default(),
+            pending_reads: vec![],
+            focused: true,
+            setting_hits: vec![],
+            settings: None,
             modal_area: Rect::default(),
             completion_area: Rect::default(),
             modal: None,
@@ -213,6 +222,7 @@ impl App {
         self.need_save_draft = true;
     }
     fn change_view(&mut self, name: String, all: bool, bridge: &Bridge) {
+        self.settings = None;
         self.stash();
         self.selected = name;
         self.show_all = all;
@@ -384,6 +394,7 @@ impl App {
                     self.show_all
                 };
                 if self.selected != selected || self.show_all != all {
+                    self.settings = None;
                     self.stash();
                     self.selected = selected;
                     self.show_all = all;
@@ -474,6 +485,11 @@ impl App {
                 self.edited();
             }
             "choose" => {
+                if string(&v, "placement") == "status" {
+                    self.receive_setting(&v);
+                    return;
+                }
+                self.settings = None;
                 let items: Vec<Item> = v["values"]
                     .as_array()
                     .into_iter()
@@ -503,6 +519,9 @@ impl App {
                     data,
                 });
             }
+            "setting-error" => {
+                self.setting_error(&v);
+            }
             "action" => match string(&v, "action") {
                 "bottom" => {
                     self.follow = true;
@@ -513,9 +532,7 @@ impl App {
                     self.reading_centered = v["enabled"].as_bool().unwrap_or(false);
                 }
                 "members" => {
-                    self.sidebar = !self.sidebar;
-                    self.timeline.invalidate();
-                    self.rebuild = true;
+                    self.toggle_member_menu();
                 }
                 "help" => self.help(),
                 "quit" => self.quit = true,
@@ -1119,6 +1136,24 @@ impl App {
             return Ok(());
         }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if self.attention_hit.contains(Position::new(x, y)) {
+                self.open_unread_menu();
+                return Ok(());
+            }
+            if let Some((_, setting)) = self
+                .setting_hits
+                .iter()
+                .find(|(area, _)| area.contains(Position::new(x, y)))
+            {
+                self.open_setting(*setting, bridge);
+                return Ok(());
+            }
+        }
+        if self.settings.is_some() {
+            self.setting_mouse(mouse, bridge);
+            return Ok(());
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             if !self.completion_area.is_empty()
                 && self.completion_area.contains(Position::new(x, y))
             {
@@ -1133,40 +1168,21 @@ impl App {
             if self.footer.contains(Position::new(x, y)) {
                 let local_x = x - self.footer.x;
                 if local_x < 10 {
-                    self.sidebar = !self.sidebar;
-                    self.timeline.invalidate();
-                    self.rebuild = true;
-                } else if local_x < 20 {
                     self.forward();
-                } else if local_x < 29 {
+                } else if local_x < 19 {
                     self.clear_selection();
                     self.follow = true;
                     self.scroll = usize::MAX;
-                } else if local_x < 43 {
+                } else if local_x < 33 {
                     self.return_source(bridge);
-                } else if local_x < 57 {
+                } else if local_x < 47 {
                     self.open_interaction();
-                } else if local_x < 65 {
+                } else if local_x < 55 {
                     self.help();
-                } else if local_x < 73 {
+                } else if local_x < 63 {
                     self.copy_selection(false);
                 } else {
                     self.clear_selection();
-                }
-                return Ok(());
-            }
-            if self.sidebar && self.sidebar_area.contains(Position::new(x, y)) {
-                self.clear_selection();
-                if y == self.sidebar_area.y + 1 {
-                    self.change_view(self.selected.clone(), true, bridge);
-                } else if y == self.sidebar_area.bottom() - 1 {
-                    self.draft.input = Input::from_prompt(&json!("/add "));
-                    self.edited();
-                } else if y >= self.sidebar_area.y + 3 {
-                    let index = self.sidebar_top + ((y - self.sidebar_area.y - 3) / 4) as usize;
-                    if let Some(m) = self.members.get(index) {
-                        self.change_view(string(m, "name").into(), false, bridge);
-                    }
                 }
                 return Ok(());
             }
@@ -1193,17 +1209,6 @@ impl App {
                 self.clear_selection();
                 return Ok(());
             }
-        }
-        if self.sidebar && self.sidebar_area.contains(Position::new(x, y)) {
-            match mouse.kind {
-                MouseEventKind::ScrollDown => {
-                    self.sidebar_top =
-                        (self.sidebar_top + 1).min(self.members.len().saturating_sub(1))
-                }
-                MouseEventKind::ScrollUp => self.sidebar_top = self.sidebar_top.saturating_sub(1),
-                _ => {}
-            }
-            return Ok(());
         }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && self.body.contains(Position::new(x, y))
@@ -1488,6 +1493,14 @@ impl App {
         if self.modal.is_some() {
             return self.modal_key(key, bridge);
         }
+        if key.code == KeyCode::Char('b') && ctrl {
+            self.toggle_member_menu();
+            return Ok(());
+        }
+        if self.settings.is_some() {
+            self.setting_key(key, bridge);
+            return Ok(());
+        }
         // Unhandled macOS commands must not become literal draft characters
         // now that the terminal reports Super/Meta keys to the application.
         if key
@@ -1502,12 +1515,6 @@ impl App {
                 self.copy_selection(key.modifiers == KeyModifiers::CONTROL)
             }
             KeyCode::Char('f') if ctrl => self.forward(),
-            KeyCode::Char('b') if ctrl => {
-                self.sidebar = !self.sidebar;
-                self.clear_selection();
-                self.timeline.invalidate();
-                self.rebuild = true;
-            }
             KeyCode::Char('l') if ctrl => {
                 self.change_view(self.selected.clone(), !self.show_all, bridge)
             }
@@ -1626,6 +1633,10 @@ impl App {
         if self.modal.is_some() {
             return;
         }
+        if self.settings.is_some() {
+            self.setting_paste(&text);
+            return;
+        }
         let images = paste::images(&text, &self.cwd);
         self.draft.input.paste(&text, &images);
         self.edited();
@@ -1737,6 +1748,7 @@ fn run(args: Vec<String>) -> Result<()> {
     let mut last_auto = Instant::now();
     let mut last_tick = Instant::now();
     let mut last_save = Instant::now();
+    let mut notice_visible = true;
     while !app.quit {
         let start = Instant::now();
         while let Ok(message) = bridge.events.try_recv() {
@@ -1754,6 +1766,11 @@ fn run(args: Vec<String>) -> Result<()> {
             last_auto = Instant::now();
         }
         if last_tick.elapsed() >= Duration::from_millis(100) {
+            let visible = app.notice_at.elapsed() < Duration::from_secs(7);
+            if visible != notice_visible {
+                notice_visible = visible;
+                dirty = true;
+            }
             if app
                 .members
                 .iter()
@@ -1792,12 +1809,20 @@ fn run(args: Vec<String>) -> Result<()> {
                     app.rebuild = true;
                     true
                 }
-                _ => false,
+                Event::FocusGained => {
+                    app.focused = true;
+                    true
+                }
+                Event::FocusLost => {
+                    app.focused = false;
+                    true
+                }
             };
             dirty |= changed;
         }
         if dirty && last_draw.elapsed() >= Duration::from_millis(8) {
             terminal.draw(|f| app.draw(f))?;
+            app.send_read_receipts(&bridge);
             dirty = false;
             last_draw = Instant::now();
         }
@@ -1810,9 +1835,17 @@ fn run(args: Vec<String>) -> Result<()> {
 }
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|a| a == "--licenses") {
+        print!(
+            "{}\n{}",
+            include_str!("../vendor/codex-mermaid/NOTICE"),
+            include_str!("../vendor/codex-mermaid/LICENSE")
+        );
+        return;
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Codex Room · Rust Fullscreen\n\nuv run codex_room [--cwd PATH] [--demo]\nuv run codex_room --legacy-ui   旧 Textual 界面\n\nF1 帮助 · Ctrl+Q 退出"
+            "Codex Room · Rust Fullscreen\n\nuv run codex_room [--cwd PATH] [--demo]\nuv run codex_room --legacy-ui   旧 Textual 界面\nuv run codex_room --licenses    第三方许可证\n\nF1 帮助 · Ctrl+Q 退出"
         );
         return;
     }

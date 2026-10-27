@@ -10,6 +10,7 @@ name = "codex-room-reading-demo"
 path = "src/reading_demo.rs"
 
 [dependencies]
+codex-mermaid = { path = "../../terminal-ui/vendor/codex-mermaid" }
 crossterm = "=0.29.0"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 serde = { version = "1", features = ["derive"] }

@@ -196,11 +196,13 @@ async def resume_member(service, value):
     if any(t.get("status") == "inProgress" for t in turns):
         raise ValueError("会话历史包含尚未结束的运行，请先在原窗口结束任务后重试")
     entries = history_entries(member, turns)
+    await service.refresh_fast_state(member)
     # Commit to Room only after all metadata/history reads have succeeded.
     service.agents[name] = member
     client.loaded.add(thread_id)
     service.ignored_native_threads.discard(thread_id)
     for entry in entries:
+        service.attention.seen.add(entry.id)
         service.add_entry(entry)
     service.selected, service.show_all = name, False
     service.dirty = True

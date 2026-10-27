@@ -25,6 +25,101 @@ fn select_rows(app: &mut App, first: usize, a: usize, last: usize, b: usize) {
 }
 
 #[test]
+fn mermaid_history_public_messages_reflow_and_copy_without_changing_forwarded_source() {
+    let source = include_str!("../../tests/fixtures/markdown_mermaid.md");
+    let legacy = entry("diagram-legacy", "A", source);
+    let mut reply = entry("diagram-reply", "A", source);
+    reply["blocks"] = json!([{"id":"diagram-text","kind":"text","text":source}]);
+    let mut peer = entry("diagram-peer", "A", source);
+    peer["target"] = json!("B");
+    peer["communication"] = json!({"content_available":true,"target_label":"B"});
+    let mut app = app(vec![legacy, reply, peer]);
+    for width in [157, 60, 20, 157] {
+        app.timeline.width = width;
+        app.timeline.invalidate();
+        app.rebuild = true;
+        app.rebuild();
+        for message in 0..3 {
+            let rows = app
+                .timeline
+                .rows
+                .iter()
+                .filter(|r| r.message == message)
+                .collect::<Vec<_>>();
+            let text = rows
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(text.contains("flowchart LR"), width == 20, "{text}");
+            assert_eq!(
+                text.replace('\n', "").contains("当前宽度不足"),
+                width == 20,
+                "{text}"
+            );
+            assert_eq!(text.contains("已改为纵向显示"), width == 60, "{text}");
+            assert!(rows.iter().all(|r| r.line.width() <= width));
+        }
+        if width == 157 {
+            let row = app
+                .timeline
+                .rows
+                .iter()
+                .position(|r| r.text.contains("全部笔录附件"))
+                .unwrap();
+            let start = app.timeline.rows[row].text.find("全部笔录附件").unwrap();
+            select_rows(&mut app, row, start, row, start + "全部笔录附件".len());
+            assert_eq!(app.selected_text(), "全部笔录附件");
+        }
+        app.selection = None;
+    }
+    assert_eq!(app.entries[1]["blocks"][0]["text"], source);
+    app.entries[0]["collapsed"] = json!(true);
+    app.timeline.invalidate();
+    app.rebuild = true;
+    app.rebuild();
+    let end = app.timeline.rows[1].text.len();
+    select_rows(&mut app, 0, 0, 1, end);
+    assert_eq!(app.quote().unwrap()["messages"][0]["text"], source);
+}
+
+#[test]
+fn multiline_mermaid_copy_and_full_forward_keep_their_respective_contents() {
+    let source = include_str!("../../tests/fixtures/markdown_mermaid_equipment.md");
+    let mut reply = entry("equipment", "A", source);
+    reply["blocks"] = json!([{"id":"text","kind":"text","text":source}]);
+    let mut app = app(vec![reply]);
+    for width in [157, 77, 92] {
+        app.timeline.width = width;
+        app.timeline.invalidate();
+        app.rebuild = true;
+        app.rebuild();
+        let row = app
+            .timeline
+            .rows
+            .iter()
+            .position(|row| row.text.contains("剩余寿命：NUMERIC"))
+            .unwrap();
+        let start = app.timeline.rows[row]
+            .text
+            .find("剩余寿命：NUMERIC")
+            .unwrap();
+        select_rows(&mut app, row, start, row, start + "剩余寿命：NUMERIC".len());
+        assert_eq!(app.selected_text(), "剩余寿命：NUMERIC");
+        app.clear_selection();
+    }
+    assert_eq!(app.entries[0]["body"], source);
+    assert_eq!(app.entries[0]["blocks"][0]["text"], source);
+    app.entries[0]["collapsed"] = json!(true);
+    app.timeline.invalidate();
+    app.rebuild = true;
+    app.rebuild();
+    let end = app.timeline.rows[1].text.len();
+    select_rows(&mut app, 0, 0, 1, end);
+    assert_eq!(app.quote().unwrap()["messages"][0]["text"], source);
+}
+
+#[test]
 fn markdown_code_blocks_render_without_fences_and_copy_only_code() {
     let source = include_str!("../../tests/fixtures/markdown_code_blocks.md");
     let mut legacy = entry("legacy-code", "A", source);
@@ -129,16 +224,15 @@ fn centered_reading_preserves_position_and_original_colors() {
     let point = app.point(app.body.x + 2, app.body.y).unwrap();
     assert_eq!(point.row, app.scroll);
     assert_eq!(point.byte, 0);
-    app.sidebar = true;
     terminal.draw(|f| app.draw(f)).unwrap();
-    assert_eq!(app.body.x, 24 + (160 - 24 - 95) / 2);
+    assert_eq!(app.body.x, (160 - 95) / 2);
     assert_eq!(app.body.width, 95);
-    assert_eq!(app.input_area.x, 24);
-    assert_eq!(app.input_area.width, 136);
+    assert_eq!(app.input_area.x, 0);
+    assert_eq!(app.input_area.width, 160);
     app.on_service(json!({"type":"action","action":"reading_centered","enabled":false}));
     terminal.draw(|f| app.draw(f)).unwrap();
-    assert_eq!(app.body.x, 24);
-    assert_eq!(app.body.width, 136);
+    assert_eq!(app.body.x, 0);
+    assert_eq!(app.body.width, 160);
     assert!(!app.follow);
 }
 
@@ -149,17 +243,10 @@ fn centered_reading_restores_and_shrinks_to_available_width() {
     app.on_service(
         json!({"type":"init","cwd":"/example","entries":app.entries,"reading_centered":true}),
     );
-    for (width, sidebar) in [
-        (160, false),
-        (120, true),
-        (80, false),
-        (80, true),
-        (50, false),
-    ] {
-        app.sidebar = sidebar;
+    for width in [160, 120, 80, 50] {
         let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
-        let available = width - if sidebar && width >= 65 { 24 } else { 0 };
+        let available = width;
         assert_eq!(app.body.width, available.min(95));
         assert_eq!(
             app.timeline.width,
@@ -178,7 +265,7 @@ fn centered_reading_restores_and_shrinks_to_available_width() {
     }
 }
 #[test]
-fn markdown_tables_fit_chat_columns_after_sidebar_and_window_resize() {
+fn markdown_tables_fit_chat_columns_after_centering_and_window_resize() {
     use ratatui::{Terminal, backend::TestBackend, style::Modifier};
     use unicode_width::UnicodeWidthStr;
 
@@ -191,21 +278,19 @@ fn markdown_tables_fit_chat_columns_after_sidebar_and_window_resize() {
     peer["communication"] = json!({"content_available":true,"target_label":"B"});
     let mut app = app(vec![legacy, reply, peer]);
 
-    for (columns, sidebar, centered) in [
-        (160, false, false),
-        (160, true, false),
-        (80, true, false),
-        (80, false, false),
-        (160, false, true),
-        (160, true, true),
-        (80, true, true),
-        (160, false, false),
+    for (columns, centered) in [
+        (160, false),
+        (120, false),
+        (80, false),
+        (160, true),
+        (120, true),
+        (80, true),
+        (160, false),
     ] {
-        app.sidebar = sidebar;
         app.reading_centered = centered;
         let mut terminal = Terminal::new(TestBackend::new(columns, 50)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        let available = columns - if sidebar { 24 } else { 0 };
+        let available = columns;
         let width = (if centered {
             available.min(95)
         } else {

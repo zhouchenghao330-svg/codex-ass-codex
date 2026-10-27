@@ -5,17 +5,7 @@ impl App {
     pub(super) fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         f.render_widget(Block::default().style(Style::default().fg(FG).bg(BG)), area);
-        let side_width = if self.sidebar && area.width >= 65 {
-            24
-        } else {
-            0
-        };
-        let main = Rect::new(
-            area.x + side_width,
-            area.y,
-            area.width.saturating_sub(side_width),
-            area.height,
-        );
+        let main = area;
         let input_width = main.width.saturating_sub(4).max(1) as usize;
         let height =
             (input::location(&self.draft.input.text, input_width).0 + 1).clamp(1, 8) as u16;
@@ -79,6 +69,7 @@ impl App {
             self.scroll = self.maximum();
         }
         self.scroll = self.scroll.min(self.maximum());
+        self.mark_visible_results();
         let mode = if self.demo {
             "演示 · 不调用 Codex"
         } else if self.connected {
@@ -136,15 +127,6 @@ impl App {
                 .iter()
                 .find(|m| string(m, "name") == sender)
                 .unwrap_or(&Value::Null);
-            let rail = if sender == "you" || sender == "system" {
-                "  "
-            } else {
-                "▎ "
-            };
-            f.render_widget(
-                Line::styled(rail, color(string(member, "color"))),
-                Rect::new(self.body.x, y, 2.min(self.body.width), 1),
-            );
             let line = if row.working {
                 let elapsed = now - e["started_epoch"].as_f64().unwrap_or(now);
                 Line::styled(
@@ -163,7 +145,7 @@ impl App {
             let bg = if sender == "you" {
                 Color::Rgb(42, 46, 42)
             } else {
-                BG
+                row.line.style.bg.unwrap_or(BG)
             };
             f.render_widget(
                 Paragraph::new(line).style(Style::default().fg(FG).bg(bg)),
@@ -191,34 +173,13 @@ impl App {
                 Rect::new(self.body.right().saturating_sub(1), y, 1, 1),
             );
         }
+        self.draw_settings_bar(f, status);
         let selected = self
             .members
             .iter()
             .find(|m| string(m, "name") == self.selected)
             .unwrap_or(&Value::Null);
         let identity_color = color(string(selected, "color"));
-        let status_line = if self.notice_at.elapsed() < Duration::from_secs(7) {
-            Line::styled(self.notice.clone(), MUTED)
-        } else {
-            Line::from(vec![
-                Span::styled(format!("@{}", string(selected, "label")), identity_color),
-                Span::styled(
-                    format!(
-                        " · {} · {} · {} · {}",
-                        string(selected, "model"),
-                        string(selected, "effort"),
-                        if string(selected, "parent_name").is_empty() {
-                            string(selected, "permission")
-                        } else {
-                            "权限由父会话管理"
-                        },
-                        string(selected, "cwd")
-                    ),
-                    MUTED,
-                ),
-            ])
-        };
-        f.render_widget(status_line, status);
         if let Some(quote) = &self.draft.quote {
             let scope = if string(quote, "scope") == "all" {
                 "整个选区".into()
@@ -244,6 +205,8 @@ impl App {
         let label = string(selected, "label");
         let title = if self.submit_pending.is_some() {
             Line::styled("正在确认发送…", MUTED)
+        } else if self.notice_at.elapsed() < Duration::from_secs(7) {
+            Line::styled(self.notice.clone(), MUTED)
         } else {
             Line::from(vec![
                 Span::styled("给 ", MUTED),
@@ -253,13 +216,12 @@ impl App {
         };
         draw_input(f, self.input_area, &self.draft.input, title);
         for (x, width, text) in [
-            (0, 10, "[成员]"),
-            (10, 10, "[转发]"),
-            (20, 9, "[底部]"),
-            (29, 14, "[返回来源]"),
-            (43, 14, "[回复请求]"),
-            (57, 8, "[帮助]"),
-            (65, 8, "[复制]"),
+            (0, 10, "[转发]"),
+            (10, 9, "[底部]"),
+            (19, 14, "[返回来源]"),
+            (33, 14, "[回复请求]"),
+            (47, 8, "[帮助]"),
+            (55, 8, "[复制]"),
         ] {
             if x < self.footer.width {
                 f.render_widget(
@@ -272,97 +234,6 @@ impl App {
                     ),
                 );
             }
-        }
-        self.sidebar_area = Rect::new(area.x, area.y, side_width, area.height);
-        if side_width > 0 {
-            let side = self.sidebar_area;
-            f.render_widget(
-                Block::default()
-                    .borders(Borders::RIGHT)
-                    .border_style(MUTED)
-                    .style(Style::default().bg(BG)),
-                side,
-            );
-            f.render_widget(
-                Line::styled(format!(" 成员 · {}", self.members.len()), MUTED),
-                Rect::new(side.x, side.y, side.width.saturating_sub(1), 1),
-            );
-            f.render_widget(
-                Line::styled(" 全部消息", if self.show_all { ACCENT } else { MUTED }),
-                Rect::new(side.x, side.y + 1, side.width.saturating_sub(1), 1),
-            );
-            for (i, m) in self.members.iter().skip(self.sidebar_top).enumerate() {
-                let y = side.y + 3 + (i * 4) as u16;
-                if y + 3 >= side.bottom().saturating_sub(1) {
-                    break;
-                }
-                let active = string(m, "name") == self.selected && !self.show_all;
-                let marker = if active { "▸" } else { " " };
-                let label = string(m, "label");
-                let parent = self
-                    .members
-                    .iter()
-                    .find(|p| string(p, "name") == string(m, "parent_name"));
-                let lines = vec![
-                    Line::styled(
-                        format!(
-                            "{marker} {}{label}",
-                            if parent.is_some() { "↳ " } else { "" }
-                        ),
-                        color(string(m, "color")),
-                    ),
-                    Line::styled(
-                        format!(
-                            "  {} {}",
-                            if m["busy"].as_bool() == Some(true) {
-                                "⠋ 工作中"
-                            } else {
-                                "● 空闲"
-                            },
-                            if self
-                                .interactions
-                                .iter()
-                                .any(|e| string(e, "_member") == string(m, "name"))
-                            {
-                                "待回复"
-                            } else {
-                                ""
-                            }
-                        ),
-                        MUTED,
-                    ),
-                    Line::styled(
-                        format!(
-                            "  {}",
-                            parent
-                                .map(|p| format!("子代理 · @{}", string(p, "label")))
-                                .unwrap_or_else(|| string(m, "cwd")
-                                    .rsplit(['/', '\\'])
-                                    .find(|s| !s.is_empty())
-                                    .unwrap_or("")
-                                    .to_owned())
-                        ),
-                        MUTED,
-                    ),
-                ];
-                f.render_widget(
-                    Paragraph::new(lines).style(Style::default().bg(if active {
-                        Color::Rgb(42, 46, 42)
-                    } else {
-                        BG
-                    })),
-                    Rect::new(side.x, y, side.width - 1, 3),
-                );
-            }
-            f.render_widget(
-                Line::styled(" ＋ 添加", MUTED),
-                Rect::new(
-                    side.x,
-                    side.bottom().saturating_sub(1),
-                    side.width.saturating_sub(1),
-                    1,
-                ),
-            );
         }
         self.completion_area = Rect::default();
         if !self.candidates.is_empty() && self.modal.is_none() {
@@ -415,6 +286,9 @@ impl App {
                     ),
                 );
             }
+        }
+        if self.modal.is_none() && self.settings.is_some() {
+            self.draw_setting_menu(f, main);
         }
         if self.modal.is_some() {
             self.draw_modal(f, area);

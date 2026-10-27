@@ -21,7 +21,8 @@ def build_binary(root: Path) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     target = manifest.parent / "target"
     executable = target / f"release/codex-room-ui{suffix}"
-    sources = [manifest, *manifest.parent.glob("Cargo.lock"), *manifest.parent.glob("src/**/*.rs")]
+    sources = [manifest, *manifest.parent.glob("Cargo.lock"), *manifest.parent.glob("src/**/*.rs"),
+               *manifest.parent.glob("vendor/**/Cargo.toml"), *manifest.parent.glob("vendor/**/*.rs")]
     if not executable.is_file() or any(p.stat().st_mtime > executable.stat().st_mtime for p in sources):
         cargo = shutil.which("cargo")
         fallback = Path.home() / f".cargo/bin/cargo{suffix}"

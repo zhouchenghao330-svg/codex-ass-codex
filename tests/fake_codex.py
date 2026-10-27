@@ -57,7 +57,7 @@ def config_for(cwd):
     path = Path(cwd) / ".codex/config.toml"
     if path.is_file():
         local = tomllib.loads(path.read_text())
-        config.update({key: local[key] for key in config if key in local})
+        config.update({key: local[key] for key in ("model", "model_reasoning_effort", "service_tier") if key in local})
     return config
 
 
@@ -224,7 +224,14 @@ async def finish(thread, turn, text, params):
                 "> 引用内容\n\n[文档](https://example.com/docs)\n\n"
                 "```python\nprint(\"**literal**\")\n```\n\n"
                 "| 模型 | 状态 |\n| --- | --- |\n| test | ready |") if markdown else f"{thread}: {text}"
-        if not text.startswith("steer-complete"):
+        if text == "mermaid-stream":
+            body = (Path(params['cwd'])/'mermaid-fixture.md').read_text()
+            end = body.rfind('```')
+            send({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":turn,"itemId":"message-1","delta":body[:end]}})
+            while not (Path(params['cwd'])/'complete-mermaid').exists():
+                await asyncio.sleep(.02)
+            send({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":turn,"itemId":"message-1","delta":body[end:]}})
+        elif not text.startswith("steer-complete"):
             for chunk in (body[:4], body[4:]):
                 send({"method": "item/agentMessage/delta", "params": {"threadId": thread, "turnId": turn, "itemId": "message-1", "delta": chunk}})
         send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn, "item": {"type": "agentMessage", "id": "message-1", "text": stream_prefix + body}}})
@@ -250,6 +257,9 @@ async def main():
             result = {"config": config_for(params["cwd"])}
         elif method == "model/list":
             result = {"data": [{"id": "test-model", "displayName": "Test Model", "defaultReasoningEffort": "low", "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]}]}
+            fixture = Path.cwd() / "fake-models.json"
+            if fixture.is_file():
+                result = {"data": json.loads(fixture.read_text())}
         elif method in {"thread/start", "thread/resume"}:
             thread = params.get("threadId") or f"thread-{len(threads) + 1}"
             threads.setdefault(thread, {})

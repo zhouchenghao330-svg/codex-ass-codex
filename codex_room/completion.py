@@ -24,7 +24,7 @@ COMMANDS = (
     ("/fast", "切换当前成员的 Fast 模式 · [on / off]"),
     ("/adhd", "切换正文窄栏居中 · [on / off]"),
     ("/permissions", "选择权限 · [full / workspace / read-only]"),
-    ("/members", "展开 / 收起成员列表"),
+    ("/members", "查看成员与工作状态"),
     ("/help", "查看帮助"),
     ("/reconnect", "重新连接 Codex"),
     ("/quit", "退出"),

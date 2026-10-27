@@ -4,10 +4,27 @@ use ratatui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+#[path = "mermaid.rs"]
+mod mermaid;
 pub const FG: Color = Color::Rgb(218, 216, 206);
 pub const MUTED: Color = Color::Rgb(147, 152, 142);
 pub const ACCENT: Color = Color::Rgb(169, 182, 255);
 pub const BG: Color = Color::Rgb(30, 33, 31);
+// Match tui-markdown's syntax when locating tables and diagram fences.
+pub(crate) fn parser_options() -> pulldown_cmark::Options {
+    use pulldown_cmark::Options;
+    Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_HEADING_ATTRIBUTES
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_SUPERSCRIPT
+        | Options::ENABLE_SUBSCRIPT
+        | Options::ENABLE_MATH
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_DEFINITION_LIST
+        | Options::ENABLE_GFM
+        | Options::ENABLE_TABLES
+}
 #[derive(Clone)]
 struct RoomMarkdown;
 impl tui_markdown::StyleSheet for RoomMarkdown {
@@ -34,7 +51,9 @@ pub fn parse(source: &str, width: usize) -> Vec<Line<'static>> {
     // a natural-width table as plain text splits its borders and columns apart.
     let options = tui_markdown::Options::new(RoomMarkdown)
         .table_width(width.clamp(1, u16::MAX as usize) as u16);
-    tui_markdown::from_str_with_options(&clean(source), &options)
+    let source = clean(source);
+    let markdown = mermaid::prepare(&source, width);
+    tui_markdown::from_str_with_options(&markdown.markdown, &options)
         .lines
         .into_iter()
         .map(|line| {
@@ -46,6 +65,7 @@ pub fn parse(source: &str, width: usize) -> Vec<Line<'static>> {
             )
             .style(line.style)
         })
+        .flat_map(|line| markdown.expand(line))
         .collect()
 }
 

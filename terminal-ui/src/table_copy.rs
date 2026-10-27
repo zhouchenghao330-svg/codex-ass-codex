@@ -2,7 +2,7 @@
 //! clipboard contains logical rows (tabs between cells), not drawing glyphs.
 //! Mappings are built once with the layout and shared by its physical rows.
 use crate::history::{self, Row, Selection};
-use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, Parser, Tag, TagEnd};
 use std::{collections::BTreeMap, ops::Range, sync::Arc};
 use tui_markdown::StyleSheet;
 use unicode_segmentation::UnicodeSegmentation;
@@ -61,18 +61,7 @@ struct ParsedTable {
 
 fn tables(source: &str) -> Vec<ParsedTable> {
     // Match tui-markdown's parser options, including references and GFM links.
-    let options = Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_HEADING_ATTRIBUTES
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Options::ENABLE_SUPERSCRIPT
-        | Options::ENABLE_SUBSCRIPT
-        | Options::ENABLE_MATH
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_DEFINITION_LIST
-        | Options::ENABLE_GFM
-        | Options::ENABLE_TABLES;
-    let parser = Parser::new_ext(source, options);
+    let parser = Parser::new_ext(source, history::parser_options());
     let mut definitions = parser
         .reference_definitions()
         .iter()

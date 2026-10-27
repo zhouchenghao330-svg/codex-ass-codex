@@ -20,7 +20,8 @@ def main():
     suffix = ".exe" if os.name == "nt" else ""
     binary = manifest.parent / f"target/release/codex-room-reading-demo{suffix}"
     sources = [manifest, manifest.with_name("Cargo.lock"), manifest.parent / "src/reading_demo.rs",
-               *(ROOT / "terminal-ui/src" / name for name in ("history.rs", "table_copy.rs", "terminal.rs", "wide_backend.rs"))]
+               *(ROOT / "terminal-ui/src" / name for name in ("history.rs", "mermaid.rs", "table_copy.rs", "terminal.rs", "wide_backend.rs")),
+               *(ROOT / "terminal-ui/vendor").rglob("*.rs")]
     if not binary.is_file() or any(path.stat().st_mtime > binary.stat().st_mtime for path in sources):
         cargo = shutil.which("cargo") or str(Path.home() / f".cargo/bin/cargo{suffix}")
         if not Path(cargo).is_file():

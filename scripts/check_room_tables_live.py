@@ -178,16 +178,17 @@ class UI:
 
     def resize(self):
         self.session.send(b"\x02")
-        self.tables_fit(160,True)
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
         self.session.resize(80,100)
-        self.tables_fit(80,True)
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
         self.session.send(b"\x02")
+        self.session.wait(lambda:"切换对话对象" not in self.session.visible)
         self.tables_fit(80)
         self.session.resize(50,100)
         self.tables_fit(50)
         self.session.resize(160,100)
         self.tables_fit(160)
-        return {"tested_content_widths":[157,133,53,77,47]}
+        return {"tested_content_widths":[157,77,47],"member_menu":"overlay without sidebar reflow"}
 
     def peer_table(self):
         self.submit("@A 请只用 Room send_message 让 B 制作 Markdown 表格，对比 Diffusion、Flow Matching、Autoregressive。"
@@ -277,7 +278,7 @@ def main():
         ui.start()
         if not args.replay_state:
             ui.check("UI01","真实模型表格及流式显示",ui.generate)
-        ui.check("UI02","侧栏、缩放及47列正文",ui.resize)
+        ui.check("UI02","成员弹层、缩放及47列正文",ui.resize)
         ui.check("UI04","表格复制保真",ui.copy_original_table)
         if not args.replay_state:
             ui.check("UI03","成员互发真实Markdown表格",ui.peer_table)

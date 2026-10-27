@@ -4,7 +4,10 @@ use crossterm::event::{
 };
 use crossterm::{
     cursor::Show,
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture,
+    },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -40,7 +43,13 @@ pub fn restore() {
         // Normal exit and panic must both restore the shell's key encoding.
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
-    let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste, Show);
+    let _ = execute!(
+        out,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        DisableFocusChange,
+        Show
+    );
     if FULL.load(Ordering::SeqCst) {
         let _ = execute!(out, LeaveAlternateScreen);
     }
@@ -61,7 +70,12 @@ pub fn setup(fullscreen: bool) -> io::Result<(Tui, Guard)> {
     let mut out = io::stdout();
     execute!(out, EnableBracketedPaste)?;
     let viewport = if fullscreen {
-        execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(
+            out,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange
+        )?;
         // Ask compatible terminals to report modified keys, including Cmd+C.
         // Keep ordinary typing/Backspace in the legacy form: no report-all or
         // release-event flags. Unsupported terminals ignore this sequence.

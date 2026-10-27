@@ -1,6 +1,6 @@
 [project]
 name = "codex-room"
-version = "0.2.10"
+version = "0.2.11"
 description = "One terminal for several independent Codex sessions."
 requires-python = ">=3.11"
 dependencies = ["textual>=8.2.8,<9"]
@@ -20,3 +20,4 @@ packages = ["codex_room"]
 "terminal-ui/Cargo.toml" = "codex_room/rust_ui/Cargo.toml"
 "terminal-ui/Cargo.lock" = "codex_room/rust_ui/Cargo.lock"
 "terminal-ui/src" = "codex_room/rust_ui/src"
+"terminal-ui/vendor" = "codex_room/rust_ui/vendor"

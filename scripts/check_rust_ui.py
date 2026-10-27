@@ -86,6 +86,231 @@ class RustUITests(unittest.TestCase):
         self.assertLess(output.index(b"\x1b[<1u"), output.index(b"\x1b[?1049l"))
         self.assertNotIn(b"\x1b[>9u", output)  # Do not encode every ordinary key.
 
+    def settings_catalog(self):
+        tiers = [{"id":"priority","name":"Fast"}]
+        (self.cwd/"fake-models.json").write_text(json.dumps([
+            {"id":"test-model","displayName":"Test Model","defaultReasoningEffort":"low",
+             "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"serviceTiers":tiers},
+            {"id":"review-model","displayName":"Review Model","defaultReasoningEffort":"medium",
+             "supportedReasoningEfforts":[{"reasoningEffort":"medium"},{"reasoningEffort":"xhigh"}],"serviceTiers":tiers},
+            {"id":"plain-model","displayName":"Plain Model","supportedReasoningEfforts":[],"serviceTiers":[]},
+        ]))
+
+    def status_line(self):
+        return next(((n,line) for n,line in enumerate(self.session.visible.splitlines())
+                     if "Fast " in line and " ▾" in line and "@" in line),(-1,""))
+
+    def click_setting(self,text):
+        row,line = self.status_line()
+        self.click(wcswidth(line[:line.index(text)]),row)
+
+    def click_footer(self,text):
+        self.session.wait(lambda:text in self.session.visible.splitlines()[-1])
+        row = self.session.screen.lines - 1
+        line = self.session.visible.splitlines()[row]
+        self.click(wcswidth(line[:line.index(text)]),row)
+
+    def click_text(self,text):
+        # A PTY read may contain only the first half of a redraw. Wait for the
+        # actual menu item, rather than matching a title/notice from that frame.
+        self.session.wait(lambda:any(line.lstrip().startswith("│") and text in line
+                                    for line in self.session.visible.splitlines()))
+        row = next(n for n,line in enumerate(self.session.visible.splitlines())
+                   if line.lstrip().startswith("│") and text in line)
+        line = self.session.visible.splitlines()[row]
+        self.click(wcswidth(line[:line.index(text)]),row)
+
+    def test_unread_results_survive_menu_and_restart_then_clear_on_visible_result(self):
+        source = (ROOT/"tests/fixtures/markdown_mermaid_edge_labels.md").read_text()
+        (self.cwd/"mermaid-fixture.md").write_text(source)
+        self.start(columns=110, rows=40)
+        self.command("/add A")
+        self.command("/add B")
+        self.command("mermaid-stream", finish="flowchart LR")
+        self.command("/focus A")
+        self.session.wait(lambda:self.status_line()[1].startswith("@A"))
+        (self.cwd/"complete-mermaid").touch()
+        self.session.wait(lambda:"[1 待查看]" in self.status_line()[1])
+        self.click_setting("[1 待查看]")
+        self.session.wait(lambda:"结果未读" in self.session.visible)
+        self.assertIn("●", self.session.visible)
+        self.session.send(b"\x1b")
+        self.session.wait(lambda:"切换对话对象" not in self.session.visible)
+        self.assertIn("[1 待查看]", self.status_line()[1])
+        self.finish()
+        state_path = self.cwd/".codex-room/state.json"
+        saved = json.loads(state_path.read_text())
+        self.assertEqual(list(saved["unread_results"]), ["B"])
+        self.start(columns=110, rows=40)
+        self.session.wait(lambda:"[1 待查看]" in self.status_line()[1])
+        self.click_setting("[1 待查看]")
+        self.session.wait(lambda:"结果未读" in self.session.visible)
+        self.session.send(b"\r")  # The badge focuses the unread member, not the current member.
+        self.session.wait(lambda:self.status_line()[1].startswith("@B") and "[1 待查看]" not in self.status_line()[1])
+        self.session.wait(lambda:"描述、方向、路径、去重规则、映射" in self.session.visible)
+        self.assertIn("关联边", self.session.visible)
+        self.assertNotIn("<br/>", self.session.visible)
+        # A visible result in an unfocused terminal remains unread until focus returns.
+        self.session.send(b"\x1b[O")
+        self.command("remember FOCUS_RESULT")
+        self.session.wait(lambda:"[1 待查看]" in self.status_line()[1] and "FOCUS_RESULT" in self.session.visible)
+        self.session.send(b"\x1b[I")
+        self.session.wait(lambda:"[1 待查看]" not in self.status_line()[1])
+        self.finish()
+        saved = json.loads(state_path.read_text())
+        self.assertFalse(saved["unread_results"])
+        self.assertEqual(next(e for e in saved["entries"] if e["sender"] == "B")["body"], source)
+
+    def test_status_model_cascade_effort_fast_cancel_and_restart(self):
+        self.settings_catalog()
+        (self.cwd/".codex").mkdir()
+        (self.cwd/".codex/config.toml").write_text('service_tier = "priority"\n')
+        self.start(columns=130,rows=38)
+        self.command("/add A")
+        self.session.wait(lambda:"Fast 开" in self.status_line()[1])
+        self.paste("SETTINGS_DRAFT_中文")
+        self.session.wait(lambda:"SETTINGS_DRAFT_中文" in self.session.visible)
+        self.click_setting("test-model")
+        self.session.wait(lambda:"review-model" in self.session.visible)
+        self.assertLess(self.row("review-model"),self.status_line()[0])
+        self.assertNotIn("选择模型 · @",self.session.visible)
+        self.paste("review")
+        self.session.wait(lambda:"筛选：review" in self.session.visible)
+        self.click_text("review-model")
+        self.session.wait(lambda:"选择思考强度" in self.session.visible and "xhigh" in self.session.visible)
+        line = self.session.visible.splitlines()[self.row("选择思考强度")]
+        self.assertGreater(wcswidth(line[:line.index("选择思考强度")]),wcswidth(line[:line.index("选择模型")]))
+        self.assertIn("test-model",self.status_line()[1])  # No partial commit.
+        self.session.send(b"\x1b")
+        self.session.wait(lambda:"选择思考强度" not in self.session.visible)
+        self.assertIn("test-model",self.status_line()[1])
+        self.assertIn("SETTINGS_DRAFT_中文",self.session.visible)
+        self.click_setting("test-model")
+        self.session.wait(lambda:"review-model" in self.session.visible)
+        self.click_text("review-model")
+        self.session.wait(lambda:"选择思考强度" in self.session.visible and "xhigh" in self.session.visible)
+        self.click_text("xhigh")
+        self.session.wait(lambda:"review-model ▾ · xhigh ▾" in self.status_line()[1])
+        self.click_setting("xhigh")
+        self.session.wait(lambda:"选择思考强度" in self.session.visible)
+        self.assertNotIn("选择模型",self.session.visible)
+        self.click_text("medium")
+        self.session.wait(lambda:"review-model ▾ · medium ▾" in self.status_line()[1])
+        self.click_setting("Fast 开")
+        self.session.wait(lambda:"Fast 模式" in self.session.visible)
+        self.click_text("Fast 关闭")
+        self.session.wait(lambda:"Fast 关" in self.status_line()[1])
+        self.assertIn("SETTINGS_DRAFT_中文",self.session.visible)
+        self.finish()
+        saved = json.loads((self.cwd/".codex-room/state.json").read_text())
+        member = saved["agents"][0]
+        self.assertEqual((member["model"],member["effort"],member["service_tier"]),("review-model","medium","default"))
+        self.assertIsNone(member["thread_id"])
+        self.assertEqual(saved["entries"],[])
+        self.start(columns=130,rows=38)
+        self.session.wait(lambda:"review-model ▾ · medium ▾ · Fast 关" in self.status_line()[1])
+        self.assertIn("SETTINGS_DRAFT_中文",self.session.visible)
+        self.finish()
+
+    def test_mermaid_stream_resize_copy_and_history_restore(self):
+        source=(ROOT/'tests/fixtures/markdown_mermaid.md').read_text()
+        (self.cwd/'mermaid-fixture.md').write_text(source)
+        helpers=self.cwd/'clipboard-helpers'
+        helpers.mkdir()
+        captured=self.cwd/'clipboard.txt'
+        for name in ('pbcopy','wl-copy','xclip','clip.exe'):
+            helper=helpers/name
+            helper.write_text('#!/bin/sh\n/bin/cat > "$CODEX_ROOM_COPY_CAPTURE"\n')
+            helper.chmod(0o755)
+        os.environ['PATH']=str(helpers)+os.pathsep+os.environ['PATH']
+        os.environ['CODEX_ROOM_COPY_CAPTURE']=str(captured)
+        self.start(columns=160,rows=40)
+        self.command('/add A')
+        self.command('mermaid-stream',finish='flowchart LR')
+        self.assertNotIn('当前宽度不足',self.session.visible)
+        self.assertNotIn('┌────────────────────┐',self.session.visible)
+        self.session.send(b'\x02')
+        self.session.wait(lambda:any(line.lstrip().startswith('│') and '@A' in line and '工作中' in line
+                                     for line in self.session.visible.splitlines()))
+        (self.cwd/'complete-mermaid').touch()
+        self.session.wait(lambda:any(line.lstrip().startswith('│') and '@A' in line and '结果未读' in line
+                                     for line in self.session.visible.splitlines()))
+        self.session.send(b'\x1b')
+        self.session.wait(lambda:'切换对话对象' not in self.session.visible)
+        self.session.wait(lambda:'Worked for' in self.session.visible and 'flowchart LR' not in self.session.visible)
+        self.assertIn('┌────────────────────┐',self.session.visible)
+        row=self.row('全部笔录附件')
+        line=self.session.visible.splitlines()[row]
+        start=wcswidth(line[:line.index('全部笔录附件')])
+        end=start+wcswidth('全部笔录附件')
+        self.session.send(f'\x1b[<0;{start+1};{row+1}M\x1b[<32;{end+1};{row+1}M\x1b[<0;{end+1};{row+1}m'.encode())
+        self.session.send(b'\x1b[99;9u')
+        self.session.wait(lambda:captured.exists() and captured.read_text()=='全部笔录附件')
+        self.session.send(b'\x1b')
+        self.session.resize(80,40)
+        self.session.wait(lambda:'┌──────────────────────────┐' in self.session.visible and 'flowchart LR' not in self.session.visible)
+        self.session.resize(160,40)
+        self.session.wait(lambda:'已改为纵向显示' not in self.session.visible and 'flowchart LR' not in self.session.visible and '┌────────────────────┐' in self.session.visible)
+        self.finish()
+        state=json.loads((self.cwd/'.codex-room/state.json').read_text())
+        answer=next(e for e in reversed(state['entries']) if e['sender']=='A')
+        self.assertEqual(answer['body'],source)
+        self.assertEqual(answer['blocks'][0]['text'],source)
+        self.start(columns=160,rows=40)
+        self.session.wait(lambda:'┌────────────────────┐' in self.session.visible and '结束说明。' in self.session.visible)
+        self.assertNotIn('flowchart LR',self.session.visible)
+        self.finish()
+
+    def test_status_member_switch_drafts_narrow_cascade_and_unsupported_fast(self):
+        self.settings_catalog()
+        self.start(columns=110,rows=34)
+        self.command("/add A")
+        self.command("/add B")
+        self.paste("B_UNSENT")
+        self.session.wait(lambda:"B_UNSENT" in self.session.visible)
+        self.click_setting("@B")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.click_text("@A")
+        self.session.wait(lambda:self.status_line()[1].startswith("@A"))
+        self.assertNotIn("B_UNSENT",self.session.visible)
+        self.paste("A_UNSENT")
+        self.session.wait(lambda:"A_UNSENT" in self.session.visible)
+        self.click_setting("@A")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.click_text("@B")
+        self.session.wait(lambda:self.status_line()[1].startswith("@B") and "B_UNSENT" in self.session.visible)
+        # Menus retain correct hit areas after terminal resize; draft stays intact.
+        self.click_setting("test-model")
+        self.session.wait(lambda:"review-model" in self.session.visible)
+        self.click_text("review-model")
+        self.session.wait(lambda:"选择思考强度" in self.session.visible and "xhigh" in self.session.visible)
+        self.session.resize(48,26)
+        self.session.wait(lambda:"选择思考强度" in self.session.visible and "选择模型" not in self.session.visible)
+        self.session.send(b"\x1b[A\r")  # Confirm medium in the single-pane fallback.
+        self.session.wait(lambda:"review-" in self.status_line()[1] and "medium" in self.status_line()[1])
+        self.session.resize(110,34)
+        self.session.wait(lambda:"B_UNSENT" in self.session.visible and "review-model ▾" in self.status_line()[1])
+        self.click_setting("review-model")
+        self.session.wait(lambda:"plain-model" in self.session.visible)
+        self.click_text("plain-model")
+        self.session.wait(lambda:"模型默认" in self.session.visible and "选择思考强度" in self.session.visible)
+        self.click_text("模型默认")
+        self.session.wait(lambda:"plain-model ▾ · 默认 ▾" in self.status_line()[1])
+        self.click_setting("Fast 关")
+        self.session.wait(lambda:"当前模型不支持 Fast" in self.session.visible)
+        self.click_text("Fast 开启")
+        self.session.wait(lambda:"当前模型不支持 Fast，请选择" in self.session.visible)
+        self.assertIn("Fast 关",self.status_line()[1])
+        self.assertIn("B_UNSENT",self.session.visible)
+        self.finish()
+        saved = json.loads((self.cwd/".codex-room/state.json").read_text())
+        a,b = saved["agents"]
+        self.assertEqual((a["model"],a["effort"]),("test-model","high"))
+        self.assertEqual((b["model"],b["effort"]),("plain-model",""))
+        self.assertEqual(saved["drafts"]["A"]["prompt"],"A_UNSENT")
+        self.assertEqual(saved["drafts"]["B"]["prompt"],"B_UNSENT")
+        self.assertEqual(saved["entries"],[])
+
     def test_macos_command_copy_replaces_stale_text_and_button_copies_current_selection(self):
         # Capture helper stdin instead of touching the user's actual clipboard.
         helpers = self.cwd/"copy-helpers"
@@ -127,7 +352,7 @@ class RustUITests(unittest.TestCase):
         self.session.send(b"\x1b[99;9u")
         copied(second)
         select("中文")
-        self.click(67, 33)  # Footer Copy must not dismiss the text selection.
+        self.click_footer("[复制]")  # Footer Copy must not dismiss the text selection.
         copied("中文")
         select(first)
         self.session.send(b"\x03")  # Existing Ctrl+C continues to copy.
@@ -302,7 +527,9 @@ class RustUITests(unittest.TestCase):
         self.start(columns=110, rows=42)
 
         def check():
-            self.session.wait(lambda:'{"tool_id":"web_search","visible":true}' in self.session.visible)
+            # A PTY read can end between the code block and following prose.
+            self.session.wait(lambda:'{"tool_id":"web_search","visible":true}' in self.session.visible
+                                     and "3. API 和 Chat Worker" in self.session.visible)
             self.assertNotIn("```",self.session.visible)
             self.assertIn('TAVILY_API_KEYS=["key1","key2","key3"]',self.session.visible)
             self.assertIn("3. API 和 Chat Worker",self.session.visible)
@@ -311,6 +538,9 @@ class RustUITests(unittest.TestCase):
         self.session.resize(80,45)
         check()
         self.session.resize(160,45)
+        # Wait for the resized frame, not the unchanged code text from the
+        # previous frame, before typing into the new terminal geometry.
+        self.session.wait(lambda:wcswidth(self.session.visible.splitlines()[-2])==160)
         self.command("/adhd on",finish="居中阅读已开启")
         check()
         self.finish()
@@ -320,7 +550,7 @@ class RustUITests(unittest.TestCase):
         self.assertEqual(code["blocks"][0]["text"],source)
         self.assertIsNone(saved["agents"][0]["thread_id"])
 
-    def test_markdown_table_columns_reflow_with_sidebar_and_terminal_width(self):
+    def test_markdown_table_columns_reflow_with_member_menu_and_terminal_width(self):
         source = (ROOT/"tests/fixtures/markdown_table.md").read_text()
         directory = self.cwd/".codex-room"
         directory.mkdir()
@@ -330,8 +560,8 @@ class RustUITests(unittest.TestCase):
                         "blocks":[{"id":"text","kind":"text","text":source}]}]}))
         self.start(columns=110, rows=60)
 
-        def assert_table(columns, sidebar):
-            left = (24 if sidebar else 0) + 2
+        def assert_table(columns):
+            left = 2
             right = columns - 2
 
             def table_rows():
@@ -352,22 +582,23 @@ class RustUITests(unittest.TestCase):
             for row in rows:
                 self.assertEqual(positions(row), expected)
 
-        assert_table(110, False)
-        self.click(1, 59)
-        assert_table(110, True)
+        assert_table(110)
+        self.session.send(b"\x02")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
         self.session.resize(80, 60)
-        assert_table(80, True)
-        self.click(25, 59)
-        assert_table(80, False)
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.session.send(b"\x02")
+        self.session.wait(lambda:"切换对话对象" not in self.session.visible)
+        assert_table(80)
         self.session.resize(160, 60)
-        assert_table(160, False)
+        assert_table(160)
         self.finish()
         restored = json.loads((directory/"state.json").read_text())
         table = next(e for e in restored["entries"] if e["id"] == "table")
         self.assertEqual(table["body"], source)
         self.assertEqual(table["blocks"][0]["text"], source)
 
-    def test_footer_member_switch_reaches_latest_after_scrolling_and_reselect(self):
+    def test_member_menu_switch_reaches_latest_after_scrolling_and_reselect(self):
         agents = [{"name": name, "label": name, "color": "#78d8bc", "cwd": str(self.cwd)} for name in ("A", "B", "C")]
         entries = [{"id": f"{name}-{n}", "sender": name, "body": f"{name} history {n}\n" * 3,
             "target": "", "state": "done"} for name in ("A", "B", "C") for n in range(60)]
@@ -380,18 +611,25 @@ class RustUITests(unittest.TestCase):
         self.session.wait(lambda:"LATEST_C" in self.session.visible)
         self.session.send(b"\x1b[<64;90;12M" * 24)
         self.session.wait(lambda:"LATEST_C" not in self.session.visible)
-        self.click(1,31)
-        self.session.wait(lambda:"成员 · 3" in self.session.visible)
-        self.click(5,11)  # Last visible member C, via the sidebar.
+        self.session.send(b"\x02")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.assertNotIn("[成员]", self.session.visible)
+        self.click_text("@C")
         self.session.wait(lambda:"LATEST_C" in self.session.visible and "@C" in self.session.visible)
         self.session.send(b"\x1b[<64;90;12M" * 24)
         self.session.wait(lambda:"LATEST_C" not in self.session.visible)
-        self.click(5,11)  # Selecting the already active member must also go down.
+        self.click_setting("@C")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.click_text("@C")  # Selecting the already active member must also go down.
         self.session.wait(lambda:"LATEST_C" in self.session.visible)
-        self.click(5,3)
+        self.click_setting("@C")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.click_text("@A")
         self.session.wait(lambda:"LATEST_A" in self.session.visible and "LATEST_C" not in self.session.visible)
-        self.click(25,31)  # Close sidebar and reflow the conversation.
-        self.session.wait(lambda:"成员 · 3" not in self.session.visible)
+        self.command("/members")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.session.send(b"\x1b")
+        self.session.wait(lambda:"切换对话对象" not in self.session.visible and "LATEST_A" in self.session.visible)
         self.assertIn("LATEST_A", self.session.visible)
         self.finish()
 
@@ -551,7 +789,7 @@ class RustUITests(unittest.TestCase):
         self.session.wait(lambda:"引用：" in self.session.visible)
         self.command("写成笔记")
         self.session.wait(lambda:"Worked for" in self.session.visible)
-        self.click(31,33) # return source
+        self.click_footer("[返回来源]")
         self.session.wait(lambda:"thread-1: remember SOURCE" in self.session.visible)
         self.assertNotIn("写成笔记",self.session.visible)
         self.command("/focus all",finish="全部消息")
@@ -564,15 +802,15 @@ class RustUITests(unittest.TestCase):
         self.assertEqual(quoted[0]["target"],"B")
         self.assertIn("SOURCE",json.dumps(quoted[0]["quote"]))
 
-    def test_forward_new_recipient_retains_source_draft_and_sidebar_button(self):
+    def test_forward_new_recipient_retains_source_draft_and_member_menu(self):
         self.start(columns=110,rows=34)
         self.command("/add A",finish="@A")
         self.command("remember SOURCE_DRAFT",finish="SOURCE_DRAFT")
         self.session.wait(lambda:"Worked for" in self.session.visible)
-        self.click(2,33)
-        self.session.wait(lambda:"成员 · 1" in self.session.visible)
-        self.click(25,33) # member button now starts after the open sidebar
-        self.session.wait(lambda:"成员 · 1" not in self.session.visible)
+        self.session.send(b"\x02")
+        self.session.wait(lambda:"切换对话对象" in self.session.visible)
+        self.session.send(b"\x02")
+        self.session.wait(lambda:"切换对话对象" not in self.session.visible)
         self.session.send("留在来源的草稿".encode())
         self.session.wait(lambda:"留在来源的草稿" in self.session.visible.splitlines()[-3])
         y=self.row("thread-1: remember SOURCE_DRAFT")
@@ -584,7 +822,7 @@ class RustUITests(unittest.TestCase):
         self.command("/add 新笔记",finish="引用：")
         self.command("写成笔记")
         self.session.wait(lambda:"Worked for" in self.session.visible)
-        self.click(31,33)
+        self.click_footer("[返回来源]")
         self.session.wait(lambda:"留在来源的草稿" in self.session.visible.splitlines()[-3])
         self.assertIn("thread-1: remember SOURCE_DRAFT",self.session.visible)
         self.finish()
