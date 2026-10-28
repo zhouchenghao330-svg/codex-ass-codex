@@ -127,6 +127,9 @@ async def finish(thread, turn, text, params):
             await asyncio.sleep(30)
         else:
             await asyncio.sleep(0.03)
+        if text == "context-compact":
+            send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn,
+                  "item": {"id": "compact-1", "type": "contextCompaction"}}})
         if text in {"thinking", "thinking-slow", "thinking-fail"}:
             reasoning = {"id": "reasoning-1", "type": "reasoning", "summary": [], "content": ["RAW_REASONING_SENTINEL"]}
             send({"method": "item/started", "params": {"threadId": thread, "turnId": turn, "item": reasoning}})

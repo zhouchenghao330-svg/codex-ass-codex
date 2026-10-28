@@ -1,7 +1,10 @@
 """Room tools shared by dynamic tools and the old-thread MCP adapter."""
 from __future__ import annotations
 
-TOOL_VERSION = 2
+# V3 relies on tool descriptions instead of repeating policy in every input.
+# Older persisted definitions may predate the collaboration preference; route
+# those threads through the current MCP descriptions without replacing history.
+TOOL_VERSION = 3
 
 COLLABORATION_PREFERENCE = """When cooperation is authorized and useful, first use list_members to inspect
 existing independent Room peers, their status and relevant recent dialogue.

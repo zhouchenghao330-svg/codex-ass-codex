@@ -72,7 +72,7 @@ async def main():
             assert all(e.communication["delivery"] in {"delivered", "steered"} for e in messages)
             assert room.agents["A"].thread_id == original.thread_id
             assert room.agents["B"].room_tool_version == TOOL_VERSION
-            print("PASS v1 root upgrade + v2 dynamic tool, original context and public text", flush=True)
+            print(f"PASS v1 root upgrade + v{TOOL_VERSION} dynamic tool, original context and public text", flush=True)
             await room.submit(Prompt("@B 这是一个给成员查询准备的用户问题 DISCOVERY_RECENT_USER。"
                 "只回复 DISCOVERY_SHORT_REPLY，不调用任何工具。"))
             await until(lambda: not room.agents["B"].busy)

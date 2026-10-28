@@ -122,13 +122,14 @@ class MemberDiscoveryTests(unittest.TestCase):
 
     def test_tools_are_available_in_new_and_old_threads_without_replacing_the_thread(self):
         member = self.room.agents["A"]
-        member.room_tool_version = 1
         old_id = member.thread_id
-        options = self.room.peers.thread_options(member)
-        self.assertIn("config", options)
-        self.assertNotIn("dynamicTools", options)
-        self.assertEqual(member.thread_id, old_id)
-        self.assertIn("codex_room_public/list_members", self.room.peers.context(old_id))
+        for version in range(TOOL_VERSION):
+            member.room_tool_version = version
+            options = self.room.peers.thread_options(member)
+            self.assertIn("config", options)
+            self.assertNotIn("dynamicTools", options)
+            self.assertEqual(member.thread_id, old_id)
+            self.assertIn("codex_room_public/list_members", self.room.peers.context(old_id))
         member.room_tool_version = TOOL_VERSION
         self.assertEqual(self.room.peers.thread_options(member), {})
         self.assertIn("room.list_members", self.room.peers.context(old_id))

@@ -57,6 +57,8 @@ class CodexClient:
         self.observer = None
         self.thread_options = None
         self.input_context = None
+        self.sent_contexts: dict[str, str] = {}
+        self.context_versions: dict[str, int] = {}
         self.thread_names = {}
 
     async def start(self) -> None:
@@ -125,6 +127,7 @@ class CodexClient:
                 method = message.get("method")
                 if method:
                     params = message.get("params", {})
+                    self.observe_context(method, params)
                     claimed = self.observer(message) if self.observer else False
                     queue = self.queues.get(params.get("threadId"))
                     if queue is not None:
@@ -155,6 +158,18 @@ class CodexClient:
                 queue.put_nowait({"method": "transport/error", "params": {"message": failure}})
             if self.observer:
                 self.observer({"method": "transport/error", "params": {"message": failure}})
+
+    def invalidate_context(self, thread_id: str) -> None:
+        self.sent_contexts.pop(thread_id, None)
+        self.context_versions[thread_id] = self.context_versions.get(thread_id, 0) + 1
+
+    def observe_context(self, method: str, params: dict) -> None:
+        # Both protocol generations can report compaction. An in-flight RPC's
+        # late acknowledgement must not mark pre-compaction context as retained.
+        if (method == "thread/compacted" or
+                (method == "item/completed" and params.get("item", {}).get("type") == "contextCompaction")):
+            if thread_id := params.get("threadId"):
+                self.invalidate_context(thread_id)
 
     async def read_native_thread(self, thread_id: str) -> dict:
         return (await self.request("thread/read", {"threadId": thread_id, "includeTurns": False}))["thread"]
@@ -270,6 +285,7 @@ class CodexClient:
             result = await self.request("thread/start", params)
         agent.legacy_instructions = False
         agent.thread_id = result["thread"]["id"]
+        self.invalidate_context(agent.thread_id)
         if new_thread and params.get("dynamicTools"):
             agent.room_tool_version = TOOL_VERSION
         self.loaded.add(agent.thread_id)
@@ -292,19 +308,27 @@ class CodexClient:
     def turn_input(self, thread_id, text, images=None):
         items = self.input_items(text, images)
         context = self.input_context(thread_id) if self.input_context else ""
-        if context:
+        update = None
+        if context and self.sent_contexts.get(thread_id) != context:
             # Keep the actual task as its own item, without changing the text
-            # stored/displayed as the user's message.
+            # stored/displayed as the user's message. Constructing a request is
+            # not proof of delivery: commit the snapshot only after acceptance.
             items.insert(0, {"type": "text", "text": context})
-        return items
+            update = self.context_versions.get(thread_id, 0), context
+        return items, update
+
+    def acknowledge_context(self, thread_id, update):
+        if update is not None and update[0] == self.context_versions.get(thread_id, 0):
+            self.sent_contexts[thread_id] = update[1]
 
     async def steer_turn(self, thread_id: str, text: str, *, images: list[str] | None = None) -> bool:
         turn_id = self.active.get(thread_id)
         if not turn_id:
             return False
+        items, update = self.turn_input(thread_id, text, images)
         try:
             await self.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
-                                             "input": self.turn_input(thread_id, text, images)})
+                                             "input": items})
         except CodexError as exc:
             # Only a definite rejection due to completion may start a fresh turn.
             # Timeouts and transport failures can already have delivered the input.
@@ -313,6 +337,7 @@ class CodexClient:
             ):
                 return False
             raise
+        self.acknowledge_context(thread_id, update)
         return True
 
     async def run_turn(self, agent, text: str, on_event: Callable[[dict], Awaitable[None]],
@@ -328,7 +353,8 @@ class CodexClient:
         original_policy = getattr(agent, "resume_policy", None)
         if original_policy:
             policy, sandbox = original_policy["approvalPolicy"], original_policy["sandboxPolicy"]
-        params = {"threadId": thread_id, "input": self.turn_input(thread_id, text, images),
+        items, update = self.turn_input(thread_id, text, images)
+        params = {"threadId": thread_id, "input": items,
                   "cwd": cwd, "approvalPolicy": policy, "sandboxPolicy": sandbox}
         if agent.model:
             params["model"] = agent.model
@@ -343,6 +369,7 @@ class CodexClient:
         try:
             response = await asyncio.shield(starting)
             turn_id = response["turn"]["id"]
+            self.acknowledge_context(thread_id, update)
             self.active[thread_id] = turn_id
             if on_started:
                 await on_started()
@@ -367,6 +394,7 @@ class CodexClient:
                 if turn_id is None:
                     response = await asyncio.wait_for(asyncio.shield(starting), 45)
                     turn_id = response["turn"]["id"]
+                    self.acknowledge_context(thread_id, update)
                 finished = False
                 while not queue.empty():
                     event = queue.get_nowait()
@@ -417,3 +445,5 @@ class CodexClient:
         await asyncio.gather(*(task for task in (self.reader, self.stderr_reader)
                                if task and task is not asyncio.current_task()), return_exceptions=True)
         self.loaded.clear()
+        self.sent_contexts.clear()
+        self.context_versions.clear()
