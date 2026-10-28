@@ -318,7 +318,8 @@ class PeerRoutingTests(unittest.TestCase):
         pending = self.peers.pending_replies(self.room.agents["B"])
         self.assertEqual(pending["total"], MAX_PENDING_REMINDERS + 1)
         self.assertEqual(len(pending["requests"]), MAX_PENDING_REMINDERS)
-        self.assertTrue(all(len(p["excerpt"]) <= 240 for p in pending["requests"]))
+        self.assertTrue(all(len(p["message"]) > 1000 for p in pending["requests"]))
+        self.assertEqual(pending["next_cursor"], MAX_PENDING_REMINDERS)
 
 
 class PeerProtocolTests(unittest.IsolatedAsyncioTestCase):

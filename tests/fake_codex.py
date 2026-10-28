@@ -10,6 +10,8 @@ turns = {}
 thread_turns = {}
 steering = {}
 steer_ready = {}
+recovery_ready = {}
+recovery_inputs = {}
 requests = {}
 sequence = 0
 
@@ -98,6 +100,9 @@ async def finish(thread, turn, text, params):
             member = text.split(maxsplit=1)[1] if " " in text else None
             result = await public_call(thread, turn, {"member": member} if member else {}, tool="list_members")
             text = "MEMBER_DISCOVERY:" + json.dumps(result, ensure_ascii=False)
+        elif text == "self-state":
+            result = await public_call(thread, turn, {"self_only": True}, tool="list_members")
+            text = "SELF_STATE:" + json.dumps(result, ensure_ascii=False)
         elif text.startswith("[Codex Room public peer message;"):
             text = await peer_input(thread, turn, text)
         if text == "continuous-stream":
@@ -130,6 +135,21 @@ async def finish(thread, turn, text, params):
         if text == "context-compact":
             send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn,
                   "item": {"id": "compact-1", "type": "contextCompaction"}}})
+        if text.startswith("compact-recover"):
+            for index in range(2 if text == "compact-recover-twice" else 1):
+                recovery_ready[turn].clear()
+                event = {"method": "item/completed", "params": {"threadId": thread, "turnId": turn,
+                         "item": {"id": f"compact-{index}", "type": "contextCompaction"}}}
+                send(event)
+                if text == "compact-recover-duplicates":
+                    send(event)
+                    send({"method": "thread/compacted", "params": {"threadId": thread, "turnId": turn}})
+                    send(event)
+                await asyncio.wait_for(recovery_ready[turn].wait(), 3)
+                await asyncio.sleep(.02)
+            if text == "compact-recover-hold":
+                await steer_ready[turn].wait()
+            text = f"RECOVERY_SEEN:{len(recovery_inputs[turn])}"
         if text in {"thinking", "thinking-slow", "thinking-fail"}:
             reasoning = {"id": "reasoning-1", "type": "reasoning", "summary": [], "content": ["RAW_REASONING_SENTINEL"]}
             send({"method": "item/started", "params": {"threadId": thread, "turnId": turn, "item": reasoning}})
@@ -280,6 +300,8 @@ async def main():
             thread_turns[thread] = turn
             steering[turn] = []
             steer_ready[turn] = asyncio.Event()
+            recovery_ready[turn] = asyncio.Event()
+            recovery_inputs[turn] = []
             turns[turn] = asyncio.create_task(finish(thread, turn, input_text(params), params))
             result = {"turn": {"id": turn, "status": "inProgress"}}
         elif method == "turn/steer":
@@ -298,7 +320,13 @@ async def main():
             if params["expectedTurnId"] != turn:
                 send({"id": message["id"], "error": {"code": -32600, "message": "turn id mismatch"}})
                 continue
-            steering[turn].append(text)
+            metadata_only = bool(params["input"]) and all(
+                i["type"] == "text" and i["text"].startswith("[Codex Room host context;") for i in params["input"])
+            if metadata_only:
+                recovery_inputs[turn].append(params["input"])
+                recovery_ready[turn].set()
+            else:
+                steering[turn].append(text)
             if text in {"finish-steer", "finish-and-ack"} or text.startswith("[Codex Room public peer message;"):
                 steer_ready[turn].set()
             if "LATE_PEER_STEER_ACK" in text:

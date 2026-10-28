@@ -196,6 +196,7 @@ class Service:
             await self.peers.bridge.start()
             self.client.thread_options = self.peers.thread_options
             self.client.input_context = self.peers.context
+            self.client.context_recovery_allowed = self.can_recover_context
             self.client.observer = self.native.observe
             await self.client.start()
             self.connected = True
@@ -210,6 +211,14 @@ class Service:
         except Exception as exc:
             self.notify(f"Codex 连接失败：{clean_error(exc)} · /reconnect 重试")
         self.members()
+
+    def can_recover_context(self, thread_id, turn_id):
+        member = next((a for a in self.agents.values() if a.thread_id == thread_id), None)
+        if not member or member.parent_name or self.closing or not self.connected:
+            return False
+        task = self.tasks.get(member.name)
+        return (member.name in self.active_entries and task is not None and not task.done()
+                and not task.cancelling() and not any(not is_public(e) for e in member.queue))
 
     async def inherit_defaults(self, member):
         if member.preserve_thread_title or not self.client or not self.connected or (member.model and member.effort):
@@ -823,6 +832,8 @@ class Service:
 
     async def stop(self, name):
         agent = self.agents[name]
+        if self.client and agent.thread_id:
+            self.client.cancel_context_recovery(agent.thread_id, suspend=True)
         self.peers.stop_member(name)
         if agent.parent_name and not agent.can_accept_direct_input:
             for entry in self.entries:

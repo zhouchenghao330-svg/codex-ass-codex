@@ -59,6 +59,12 @@ class CodexClient:
         self.input_context = None
         self.sent_contexts: dict[str, str] = {}
         self.context_versions: dict[str, int] = {}
+        self.context_recovery_allowed = None
+        self.context_recoveries: dict[str, asyncio.Task] = {}
+        self.context_suspended: set[str] = set()
+        self.compaction_events: deque[tuple] = deque(maxlen=128)
+        self.last_compactions: dict[str, tuple] = {}
+        self.finished_turns: dict[str, str] = {}
         self.thread_names = {}
 
     async def start(self) -> None:
@@ -164,12 +170,80 @@ class CodexClient:
         self.context_versions[thread_id] = self.context_versions.get(thread_id, 0) + 1
 
     def observe_context(self, method: str, params: dict) -> None:
-        # Both protocol generations can report compaction. An in-flight RPC's
-        # late acknowledgement must not mark pre-compaction context as retained.
-        if (method == "thread/compacted" or
+        thread_id = params.get("threadId")
+        if not thread_id:
+            return
+        if method == "turn/completed":
+            turn_id = params.get("turn", {}).get("id")
+            self.finished_turns[thread_id] = turn_id
+            if self.active.get(thread_id) == turn_id:
+                self.cancel_context_recovery(thread_id)
+            return
+        if not (method == "thread/compacted" or
                 (method == "item/completed" and params.get("item", {}).get("type") == "contextCompaction")):
-            if thread_id := params.get("threadId"):
-                self.invalidate_context(thread_id)
+            return
+        turn_id = params.get("turnId") or self.active.get(thread_id)
+        if self.active.get(thread_id) and self.active[thread_id] != turn_id:
+            return  # A late notification from an earlier run cannot touch this one.
+        item_id = params.get("item", {}).get("id")
+        key = thread_id, turn_id, item_id
+        last = self.last_compactions.get(thread_id)
+        if key in self.compaction_events:
+            return
+        self.compaction_events.append(key)
+        # Some servers emit both legacy and canonical notifications. Pair them
+        # in either order, while distinct canonical item IDs remain new events.
+        if last and last[0] == turn_id and (not item_id or not last[1]):
+            if item_id:
+                self.last_compactions[thread_id] = turn_id, item_id
+            return
+        self.last_compactions[thread_id] = turn_id, item_id
+        self.invalidate_context(thread_id)
+        self.schedule_context_recovery(thread_id, turn_id)
+
+    def cancel_context_recovery(self, thread_id, *, suspend=False):
+        if suspend:
+            self.context_suspended.add(thread_id)
+        if task := self.context_recoveries.pop(thread_id, None):
+            task.cancel()
+
+    def schedule_context_recovery(self, thread_id, turn_id):
+        if not self.input_context or not turn_id or self.active.get(thread_id) != turn_id:
+            return
+        self.cancel_context_recovery(thread_id)
+        version = self.context_versions.get(thread_id, 0)
+        task = asyncio.create_task(self.recover_context(thread_id, turn_id, version))
+        self.context_recoveries[thread_id] = task
+        def done(task):
+            if self.context_recoveries.get(thread_id) is task:
+                self.context_recoveries.pop(thread_id, None)
+        task.add_done_callback(done)
+
+    def can_recover_context(self, thread_id, turn_id, version):
+        return (not self.closing and thread_id not in self.context_suspended
+                and self.active.get(thread_id) == turn_id
+                and self.finished_turns.get(thread_id) != turn_id
+                and self.context_versions.get(thread_id, 0) == version
+                and (not self.context_recovery_allowed or self.context_recovery_allowed(thread_id, turn_id)))
+
+    async def recover_context(self, thread_id, turn_id, version):
+        # Give already-queued user input a chance to restore the same snapshot.
+        # Never block the reader or hold the user's delivery lock awaiting an ACK.
+        await asyncio.sleep(0)
+        if not self.can_recover_context(thread_id, turn_id, version):
+            return
+        try:
+            context = self.input_context(thread_id)
+            if not context or self.sent_contexts.get(thread_id) == context:
+                return
+            result = await self.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": context}]})
+            if result.get("turnId") == turn_id and self.can_recover_context(thread_id, turn_id, version):
+                self.acknowledge_context(thread_id, (version, context))
+        except Exception as exc:
+            # Failed/uncertain recovery stays dirty for the next real input;
+            # never start a new task or retry an input that may have arrived.
+            self.diagnostics.append("Room 状态恢复未确认：" + clean_error(exc))
 
     async def read_native_thread(self, thread_id: str) -> dict:
         return (await self.request("thread/read", {"threadId": thread_id, "includeTurns": False}))["thread"]
@@ -346,6 +420,7 @@ class CodexClient:
         thread_id = agent.thread_id
         if not thread_id:
             raise CodexError("尚未创建 Codex 会话。")
+        self.context_suspended.discard(thread_id)
         queue: asyncio.Queue = asyncio.Queue()
         self.queues[thread_id] = queue
         cwd = agent.cwd or self.cwd
@@ -371,6 +446,8 @@ class CodexClient:
             turn_id = response["turn"]["id"]
             self.acknowledge_context(thread_id, update)
             self.active[thread_id] = turn_id
+            if self.last_compactions.get(thread_id, (None,))[0] == turn_id:
+                self.schedule_context_recovery(thread_id, turn_id)
             if on_started:
                 await on_started()
             while True:
@@ -389,6 +466,7 @@ class CodexClient:
                         raise CodexError(clean_error(error.get("message", "Codex 执行失败")))
                     return turn
         except asyncio.CancelledError:
+            self.cancel_context_recovery(thread_id, suspend=True)
             # A cancelled UI task must not leave a still-running Codex turn behind.
             try:
                 if turn_id is None:
@@ -424,6 +502,7 @@ class CodexClient:
                 await self.close()
             raise
         finally:
+            self.cancel_context_recovery(thread_id)
             self.active.pop(thread_id, None)
             self.queues.pop(thread_id, None)
 
@@ -431,6 +510,11 @@ class CodexClient:
         if self.closing:
             return
         self.closing = True
+        recoveries = list(self.context_recoveries.values())
+        for task in recoveries:
+            task.cancel()
+        await asyncio.gather(*recoveries, return_exceptions=True)
+        self.context_recoveries.clear()
         proc = self.process
         if proc and proc.returncode is None:
             proc.terminate()

@@ -65,6 +65,33 @@ class MemberDiscoveryTests(unittest.TestCase):
         self.assertEqual(second["members"][0]["name"], "C")
         self.assertIsNone(second["next_cursor"])
 
+    def test_self_only_returns_current_identity_and_paged_original_pending_requests(self):
+        self.room.agents["A"].label = "开发"
+        self.room.agents["A"].permission = "read-only"
+        bodies = ["原文\n\n```json\n{\"a\":1}\n```\n" + "中文🙂 " * 8000, "第二条原文\n" + "x" * 40000]
+        for index, body in enumerate(bodies):
+            request = Entry("B", body, "A", communication={
+                "source_thread_id": "thread-B", "target_thread_id": "thread-A", "expect_reply": True,
+                "delivery": "delivered", "chain_id": f"request-{index}"})
+            self.room.peers.messages[request.id] = request
+        before = [asdict(e) for e in self.room.entries]
+        result = self.query(self_only=True)
+        self.assertEqual(result["members"], [])
+        self.assertEqual(result["total_members"], 0)
+        self.assertEqual((result["self"]["name"], result["self"]["label"], result["self"]["permission"]),
+                         ("A", "开发", "read-only"))
+        pending = result["self"]["pending_replies"]
+        self.assertEqual(pending["total"], 2)
+        self.assertEqual([p["message"] for p in pending["requests"]], bodies[:1])
+        second = self.query(self_only=True, pending_cursor=pending["next_cursor"])["self"]["pending_replies"]
+        self.assertEqual([p["message"] for p in second["requests"]], bodies[1:])
+        self.assertIsNone(second["next_cursor"])
+        self.assertEqual(before, [asdict(e) for e in self.room.entries])
+        self.assertFalse(any(m.queue for m in self.room.agents.values()))
+        for invalid in ({"self_only": 1}, {"self_only": True, "member": "B"},
+                        {"pending_cursor": -1}, {"pending_cursor": True}, {"pending_cursor": "1"}):
+            self.assertFalse(self.query(**invalid)["accepted"], invalid)
+
     def test_hidden_inputs_peer_turns_and_tools_are_not_user_dialogue(self):
         q1, a1 = self.pair("第一问", "第一答", 1)
         q2 = Entry("you", "追问", "B", state="steered", run_id=q1.run_id)
